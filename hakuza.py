@@ -4131,6 +4131,42 @@ def build_parser() -> argparse.ArgumentParser:
                        choices=["all", "mqtt", "rtsp", "modbus", "snmp"],
                        default="all", help="Protocol focus (default: all)")
 
+    # --- AI findings-triage batch commands (from mod_ai_batch) ---
+    p_dedup = sub.add_parser("deduplicate", help="AI deduplication of findings")
+    p_dedup.add_argument("--dry-run", action="store_true", dest="dry_run",
+                         help="Show what would be merged without making changes")
+    p_dedup.add_argument("--auto", action="store_true",
+                         help="Auto-mark duplicates without confirmation")
+
+    p_enrich = sub.add_parser("enrich", help="AI batch enrichment of findings")
+    p_enrich.add_argument("--all", action="store_true", dest="all",
+                          help="Enrich all findings regardless of missing fields")
+    p_enrich.add_argument("--missing-cvss", action="store_true", dest="missing_cvss",
+                          help="Only enrich findings missing CVSS score")
+    p_enrich.add_argument("--missing-cwe", action="store_true", dest="missing_cwe",
+                          help="Only enrich findings missing CWE")
+    p_enrich.add_argument("--finding", default=None,
+                          help="Enrich a single finding by short ID or UUID prefix")
+
+    p_prio = sub.add_parser("prioritize", help="AI remediation prioritization")
+    p_prio.add_argument("--format", choices=["table", "matrix", "timeline"],
+                        default="table", help="Output format")
+    p_prio.add_argument("--bfsi", action="store_true",
+                        help="Apply BFSI regulatory deadlines (PCI-DSS/RBI)")
+
+    p_matrix = sub.add_parser("matrix", help="Generate attack chain matrix")
+    p_matrix.add_argument("--save", action="store_true",
+                          help="Save matrix to engagement directory as markdown")
+
+    # --- report diff (from mod_report) ---
+    p_diff = sub.add_parser("diff-report", help="Compare two finding exports")
+    p_diff.add_argument("--old", required=True, metavar="FILE",
+                        help="Old findings JSON file")
+    p_diff.add_argument("--new", required=True, metavar="FILE",
+                        help="New findings JSON file")
+    p_diff.add_argument("--output", metavar="FILE",
+                        help="Save delta as JSON")
+
     # --- recon-plus module: wayback, secrets, fuzz, wizard, scope, config ---
     if mod_recon_plus is not None:
         mod_recon_plus.register_argparse(sub)
@@ -4187,6 +4223,11 @@ def main():
         "ios":    cmd_ios,
         "cloud":  cmd_cloud,
         "iot":    cmd_iot,
+        "deduplicate": cmd_deduplicate,
+        "enrich":      cmd_enrich,
+        "prioritize":  cmd_prioritize,
+        "matrix":      cmd_matrix,
+        "diff-report": cmd_diff_report,
     }
 
     if mod_recon_plus is not None:
@@ -6525,15 +6566,6 @@ def cmd_deduplicate(args, console: Console) -> None:
     """
     eng = _require_engagement(console)
 
-    try:
-        client = get_client()
-    except SystemExit:
-        console.print(
-            "[red]Anthropic API key required for deduplication.[/red]\n"
-            "[dim]Set it with: hakuza config --set api_key=sk-...[/dim]"
-        )
-        return
-
     dry_run = getattr(args, "dry_run", False)
     auto = getattr(args, "auto", False)
 
@@ -6543,6 +6575,17 @@ def cmd_deduplicate(args, console: Console) -> None:
 
     if len(open_findings) < 2:
         console.print("[yellow]Fewer than 2 open findings — nothing to deduplicate.[/yellow]")
+        return
+
+    # Check for an API key only once we know there's actually work to do —
+    # no point blocking on an interactive key prompt for a no-op run.
+    try:
+        client = get_client()
+    except SystemExit:
+        console.print(
+            "[red]Anthropic API key required for deduplication.[/red]\n"
+            "[dim]Set it with: hakuza config --set api_key=sk-...[/dim]"
+        )
         return
 
     console.print(
@@ -6778,15 +6821,6 @@ def cmd_enrich(args, console: Console) -> None:
     """
     eng = _require_engagement(console)
 
-    try:
-        client = get_client()
-    except SystemExit:
-        console.print(
-            "[red]Anthropic API key required for enrichment.[/red]\n"
-            "[dim]Set it with: hakuza config --set api_key=sk-...[/dim]"
-        )
-        return
-
     enrich_all = getattr(args, "all", False)
     missing_cvss = getattr(args, "missing_cvss", False)
     missing_cwe = getattr(args, "missing_cwe", False)
@@ -6822,6 +6856,17 @@ def cmd_enrich(args, console: Console) -> None:
 
     if not target_findings:
         console.print("[green]All findings already have the requested enrichment fields.[/green]")
+        return
+
+    # Check for an API key only once we know there's actually work to do —
+    # no point blocking on an interactive key prompt for a no-op run.
+    try:
+        client = get_client()
+    except SystemExit:
+        console.print(
+            "[red]Anthropic API key required for enrichment.[/red]\n"
+            "[dim]Set it with: hakuza config --set api_key=sk-...[/dim]"
+        )
         return
 
     console.print(
@@ -6990,15 +7035,6 @@ def cmd_prioritize(args, console: Console) -> None:
     """
     eng = _require_engagement(console)
 
-    try:
-        client = get_client()
-    except SystemExit:
-        console.print(
-            "[red]Anthropic API key required for prioritization.[/red]\n"
-            "[dim]Set it with: hakuza config --set api_key=sk-...[/dim]"
-        )
-        return
-
     fmt = getattr(args, "format", "table") or "table"
     bfsi = getattr(args, "bfsi", False)
 
@@ -7007,6 +7043,17 @@ def cmd_prioritize(args, console: Console) -> None:
 
     if not open_findings:
         console.print("[yellow]No open findings to prioritize.[/yellow]")
+        return
+
+    # Check for an API key only once we know there's actually work to do —
+    # no point blocking on an interactive key prompt for a no-op run.
+    try:
+        client = get_client()
+    except SystemExit:
+        console.print(
+            "[red]Anthropic API key required for prioritization.[/red]\n"
+            "[dim]Set it with: hakuza config --set api_key=sk-...[/dim]"
+        )
         return
 
     counts = get_finding_count(eng["id"])
@@ -7285,15 +7332,6 @@ def cmd_matrix(args, console: Console) -> None:
     """
     eng = _require_engagement(console)
 
-    try:
-        client = get_client()
-    except SystemExit:
-        console.print(
-            "[red]Anthropic API key required for matrix generation.[/red]\n"
-            "[dim]Set it with: hakuza config --set api_key=sk-...[/dim]"
-        )
-        return
-
     save = getattr(args, "save", False)
 
     findings = list_findings(eng["id"])
@@ -7301,6 +7339,17 @@ def cmd_matrix(args, console: Console) -> None:
 
     if len(open_findings) < 2:
         console.print("[yellow]Need at least 2 open findings to build an attack chain matrix.[/yellow]")
+        return
+
+    # Check for an API key only once we know there's actually work to do —
+    # no point blocking on an interactive key prompt for a no-op run.
+    try:
+        client = get_client()
+    except SystemExit:
+        console.print(
+            "[red]Anthropic API key required for matrix generation.[/red]\n"
+            "[dim]Set it with: hakuza config --set api_key=sk-...[/dim]"
+        )
         return
 
     # Cap at 20 findings to keep the matrix readable
@@ -8967,8 +9016,8 @@ def cmd_diff_report(args, console) -> None:
         for f in new_findings:
             sev = (f.get("severity") or "info").lower()
             t.add_row(
-                f.get("short_id", "-"),
-                (f.get("title") or "")[:60],
+                _rich_escape(str(f.get("short_id", "-"))),
+                _rich_escape((f.get("title") or "")[:60]),
                 f.get("severity", "info").upper(),
                 str(f.get("cvss_score") or "-"),
                 style=_sev_color(sev),
@@ -8983,8 +9032,8 @@ def cmd_diff_report(args, console) -> None:
         t.add_column("Previous Severity", width=16)
         for f in fixed_findings:
             t.add_row(
-                f.get("short_id", "-"),
-                (f.get("title") or "")[:60],
+                _rich_escape(str(f.get("short_id", "-"))),
+                _rich_escape((f.get("title") or "")[:60]),
                 (f.get("severity") or "").upper(),
                 style="dim",
             )
@@ -9001,8 +9050,8 @@ def cmd_diff_report(args, console) -> None:
         t.add_column("New Status", width=12)
         for ch in changed_findings:
             t.add_row(
-                ch["new"].get("short_id", "-"),
-                (ch["new"].get("title") or "")[:50],
+                _rich_escape(str(ch["new"].get("short_id", "-"))),
+                _rich_escape((ch["new"].get("title") or "")[:50]),
                 (ch["old"].get("severity") or "").upper(),
                 (ch["new"].get("severity") or "").upper(),
                 (ch["old"].get("status") or "").lower(),
