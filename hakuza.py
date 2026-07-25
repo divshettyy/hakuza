@@ -2359,7 +2359,7 @@ def cmd_analyze(args, console):
     prompt = f"""You are performing a comprehensive penetration testing analysis for: {eng['name']}
 Target: {eng.get('target', 'N/A')}
 Engagement type: {eng.get('type', 'web')}
-Client: {eng.get('client_name', 'N/A')}
+Client: {eng.get('client', 'N/A')}
 
 FINDINGS DATA:
 {findings_text}
@@ -2431,7 +2431,7 @@ def cmd_advise(args, console):
 
 Engagement: {eng['name']}
 Target URL: {eng.get('target', 'N/A')}
-Scope: {eng.get('scope_notes', 'Full scope')}
+Scope: {eng.get('scope', 'Full scope')}
 Engagement type: {eng.get('type', 'web')}
 Known technology stack: {eng.get('tech_stack', 'Unknown')}
 Existing findings so far:
@@ -2629,7 +2629,7 @@ def cmd_web(args, console):
 
     prompt = f"""Generate a complete web application security testing guide for:
 URL: {url}
-Client: {eng.get('client_name','N/A')}
+Client: {eng.get('client','N/A')}
 Engagement: {eng['name']}{category_focus}
 
 ## 1. OWASP Testing Guide Checklist (20+ items)
@@ -3706,10 +3706,10 @@ def cmd_chat(args, console):
     else:
         ctx_block = (
             f"Active engagement: {eng['name']}\n"
-            f"Client: {eng.get('client_name','N/A')}\n"
+            f"Client: {eng.get('client','N/A')}\n"
             f"Target: {eng.get('target','N/A')}\n"
             f"Type: {eng.get('type','web')}\n"
-            f"Scope: {eng.get('scope_notes','Full scope')}\n"
+            f"Scope: {eng.get('scope','Full scope')}\n"
             f"Start date: {eng.get('start_date','N/A')}\n\n"
             f"FINDINGS SUMMARY:\n{findings_to_summary_text(findings) if findings else 'No findings yet.'}\n"
         )
