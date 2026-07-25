@@ -3594,18 +3594,20 @@ def cmd_findings(args, console):
 
     if export_fmt:
         ts = datetime.now().strftime("%Y%m%d")
+        eng_dir = ENGAGEMENTS_DIR / eng["name"]
+        eng_dir.mkdir(parents=True, exist_ok=True)
         if export_fmt == "json":
-            out_path = Path(f"nexus_findings_{eng['name']}_{ts}.json")
+            out_path = eng_dir / f"nexus_findings_{eng['name']}_{ts}.json"
             out_path.write_text(json.dumps(findings, indent=2, default=str), encoding="utf-8")
         elif export_fmt == "csv":
-            out_path = Path(f"nexus_findings_{eng['name']}_{ts}.csv")
+            out_path = eng_dir / f"nexus_findings_{eng['name']}_{ts}.csv"
             if findings:
                 with open(out_path, "w", newline="", encoding="utf-8") as fh:
                     writer = csv.DictWriter(fh, fieldnames=findings[0].keys())
                     writer.writeheader()
                     writer.writerows(findings)
         elif export_fmt == "md":
-            out_path = Path(f"nexus_findings_{eng['name']}_{ts}.md")
+            out_path = eng_dir / f"nexus_findings_{eng['name']}_{ts}.md"
             md_lines = [f"# Findings — {eng['name']}\n\n"]
             for f in findings:
                 md_lines.append(f"## {f.get('title','Untitled')} ({f.get('severity','N/A')})\n")
