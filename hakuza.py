@@ -4539,7 +4539,10 @@ def cmd_serve(args, console: Console) -> None:
             pass
 
     try:
-        web_app_mod.app.run(host=host, port=port, debug=debug)
+        # threaded=False: see the matching comment in webapp/run.py — get_db()
+        # is a process-wide singleton connection and sqlite3 forbids cross-
+        # thread reuse; single-threaded serving is required to keep it safe.
+        web_app_mod.app.run(host=host, port=port, debug=debug, threaded=False)
     except OSError as exc:
         console.print(f"[red]Could not start server:[/red] {_rich_escape(str(exc))}")
         console.print(f"[dim]Port {port} may be in use — try `hakuza serve --port 8080`.[/dim]")

@@ -36,7 +36,18 @@ def main():
         print("      process beyond localhost; the Werkzeug debugger is live.")
     print("=" * 60)
 
-    app.run(host=host, port=port, debug=debug)
+    # threaded=False is load-bearing, not a default: hakuza.get_db() is a
+    # process-wide singleton connection (by design, for the CLI's single-
+    # threaded usage), and Python's sqlite3 module forbids using a connection
+    # from any thread other than the one that created it. Werkzeug's dev
+    # server can dispatch requests on different threads even with debug off,
+    # which crashes every request that lands on a thread other than the one
+    # that happened to create the cached connection (500:
+    # "SQLite objects created in a thread can only be used in that same
+    # thread" — reproduced live by hitting two different routes back to
+    # back). Forcing single-threaded serving guarantees the singleton is only
+    # ever touched by the one thread that created it.
+    app.run(host=host, port=port, debug=debug, threaded=False)
 
 
 if __name__ == "__main__":
