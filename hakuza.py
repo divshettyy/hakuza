@@ -2027,7 +2027,7 @@ def cmd_takeover(args, console: Console) -> None:
 
     console.print(
         Panel(
-            f"[bold]Domain:[/bold] {domain}",
+            f"[bold]Domain:[/bold] {_rich_escape(domain)}",
             title="[bold cyan]  HAKUZA Subdomain Takeover Scan[/bold cyan]",
             border_style="cyan",
             expand=False,
@@ -2117,7 +2117,7 @@ def cmd_takeover(args, console: Console) -> None:
                 remediation=f"Remove the dangling CNAME record, or claim the resource immediately: {f['how']}",
                 tool="takeover",
             )
-            console.print(f"  [green]+[/green] {saved['short_id']} — {saved['title']}")
+            console.print(f"  [green]+[/green] {_rich_escape(saved['short_id'])} — {_rich_escape(saved['title'])}")
 
     console.print(
         f"\n[dim]Checked: {len(subdomains)}  |  Findings: {len(all_findings)}  |  "
