@@ -1855,6 +1855,278 @@ def _run_nuclei(
         return []
 
 
+_TAKEOVER_FINGERPRINTS = {
+    "GitHub Pages": {
+        "cname": ["github.io", "github.com"],
+        "body": ["There isn't a GitHub Pages site here", "For root URLs (like http://example.com/) you must provide an index.html"],
+        "severity": "high",
+        "how": "Create a GitHub repository and enable Pages for the matching name",
+    },
+    "Heroku": {
+        "cname": ["herokudns.com", "herokuapp.com"],
+        "body": ["No such app", "herokucdn.com/error-pages/no-such-app.html"],
+        "severity": "high",
+        "how": "Register a Heroku app with the matching name",
+    },
+    "Amazon S3": {
+        "cname": ["s3.amazonaws.com", "s3-website"],
+        "body": ["NoSuchBucket", "The specified bucket does not exist"],
+        "severity": "critical",
+        "how": "aws s3api create-bucket --bucket <name-from-subdomain>",
+    },
+    "Amazon CloudFront": {
+        "cname": ["cloudfront.net"],
+        "body": ["Bad Request", "ERROR: The request could not be satisfied"],
+        "severity": "high",
+        "how": "Create a CloudFront distribution with a matching origin",
+    },
+    "Fastly": {
+        "cname": ["fastly.net", "fastlylb.net"],
+        "body": ["Fastly error: unknown domain", "Please check that this domain has been added"],
+        "severity": "high",
+        "how": "Register the domain in Fastly",
+    },
+    "Netlify": {
+        "cname": ["netlify.app", "netlify.com"],
+        "body": ["Not Found - Request ID"],
+        "severity": "high",
+        "how": "Create a Netlify site with the matching name",
+    },
+    "Shopify": {
+        "cname": ["myshopify.com", "shops.myshopify.com"],
+        "body": ["Sorry, this shop is currently unavailable", "Store Not Found"],
+        "severity": "medium",
+        "how": "Register a Shopify store with the same name",
+    },
+    "Tumblr": {
+        "cname": ["domains.tumblr.com"],
+        "body": ["Whatever you were looking for doesn't currently exist at this address"],
+        "severity": "medium",
+        "how": "Create a Tumblr blog with the matching URL",
+    },
+    "WordPress": {
+        "cname": ["wordpress.com"],
+        "body": ["Do you want to register"],
+        "severity": "medium",
+        "how": "Register a WordPress.com blog with the matching URL",
+    },
+    "HubSpot": {
+        "cname": ["hubspot.net", "hubspot.com"],
+        "body": ["Domain Not Found"],
+        "severity": "medium",
+        "how": "Create a HubSpot landing page with the matching domain",
+    },
+    "Azure": {
+        "cname": ["azure-api.net", "azurewebsites.net", "cloudapp.net", "trafficmanager.net", "azureedge.net"],
+        "body": ["404 Web Site not found", "The resource you are looking for has been removed"],
+        "severity": "high",
+        "how": "Create an Azure resource with the matching name",
+    },
+    "Zendesk": {
+        "cname": ["zendesk.com"],
+        "body": ["Help Center Closed"],
+        "severity": "medium",
+        "how": "Create a Zendesk account with the matching subdomain",
+    },
+    "Surge.sh": {
+        "cname": ["surge.sh"],
+        "body": ["project not found"],
+        "severity": "high",
+        "how": "surge <domain> via the surge.sh CLI",
+    },
+    "Ghost": {
+        "cname": ["ghost.io", "ghost.org"],
+        "body": ["The thing you were looking for is no longer here"],
+        "severity": "medium",
+        "how": "Create a Ghost blog with the matching subdomain",
+    },
+}
+
+
+def _takeover_cname(subdomain: str) -> "str | None":
+    stdout, _, _ = run_tool(["dig", "+short", "CNAME", subdomain], timeout=6)
+    cname = stdout.strip().splitlines()[-1].rstrip(".") if stdout.strip() else ""
+    return cname or None
+
+
+def _takeover_nxdomain(subdomain: str) -> bool:
+    stdout, _, _ = run_tool(["dig", "+short", subdomain], timeout=6)
+    return not stdout.strip()
+
+
+def _takeover_fetch(url: str, timeout: int = 8) -> "tuple[int, str]":
+    marker = "__HAKUZA_STATUS__"
+    stdout, _, _ = run_tool(
+        ["curl", "-sk", "-m", str(timeout), "-L", "-o", "-", "-w", f"\n{marker}%{{http_code}}", url],
+        timeout=timeout + 3,
+    )
+    if marker in stdout:
+        body, _, status_str = stdout.rpartition(marker)
+        status = int(status_str) if status_str.strip().isdigit() else 0
+    else:
+        body, status = stdout, 0
+    return status, body
+
+
+def _takeover_check_one(subdomain: str) -> list:
+    """Check a single subdomain for a dangling-CNAME takeover. Returns a list of finding dicts."""
+    findings = []
+    cname = _takeover_cname(subdomain)
+
+    if _takeover_nxdomain(subdomain):
+        return findings  # NXDOMAIN with no CNAME record isn't independently actionable here
+
+    if not cname:
+        return findings
+
+    status, body = _takeover_fetch(f"http://{subdomain}")
+    if status == 0:
+        status, body = _takeover_fetch(f"https://{subdomain}")
+
+    for service, fp in _TAKEOVER_FINGERPRINTS.items():
+        cname_match = any(c in cname for c in fp["cname"])
+        if not cname_match:
+            continue
+        body_match = any(sig in body for sig in fp["body"])
+        if body_match:
+            findings.append({
+                "subdomain": subdomain, "cname": cname, "service": service,
+                "severity": fp["severity"], "how": fp["how"],
+                "detail": f"CNAME points to an unclaimed {service} resource — response body matches the {service} takeover fingerprint.",
+                "confirmed": True,
+            })
+        elif status in (200, 404):
+            findings.append({
+                "subdomain": subdomain, "cname": cname, "service": service,
+                "severity": "low", "how": fp["how"],
+                "detail": f"CNAME points to {service} but the response (HTTP {status}) didn't match a known takeover fingerprint — manual review needed.",
+                "confirmed": False,
+            })
+
+    if cname and "s3" in cname:
+        s3_status, s3_body = _takeover_fetch(f"https://{subdomain}.s3.amazonaws.com/")
+        if "NoSuchBucket" in s3_body:
+            bucket_name = subdomain.split(".")[0]
+            findings.append({
+                "subdomain": subdomain, "cname": cname, "service": "Amazon S3 (bucket check)",
+                "severity": "critical",
+                "how": f"aws s3api create-bucket --bucket {bucket_name}",
+                "detail": f"S3 bucket '{bucket_name}' does not exist and can be claimed to serve content for {subdomain}.",
+                "confirmed": True,
+            })
+
+    return findings
+
+
+def cmd_takeover(args, console: Console) -> None:
+    """
+    hakuza takeover [--target <domain>] [--save]
+
+    Subdomain takeover scan: resolves CNAMEs for discovered/enumerated
+    subdomains and checks them against a 15-service dangling-CNAME
+    fingerprint database (S3, GitHub Pages, Heroku, Azure, Netlify, etc.).
+    High-value, low-effort bug class — often the fastest path to a paid
+    finding on a bug bounty program. Confirmed takeovers are persisted as
+    findings automatically.
+    """
+    eng = _require_engagement(console)
+    target_override = getattr(args, "target", None)
+    domain = _extract_domain(target_override or eng.get("target", ""))
+
+    if not domain:
+        console.print("[red]No target domain available — set one with --target or on the engagement.[/red]")
+        return
+
+    console.print(
+        Panel(
+            f"[bold]Domain:[/bold] {domain}",
+            title="[bold cyan]  HAKUZA Subdomain Takeover Scan[/bold cyan]",
+            border_style="cyan",
+            expand=False,
+        )
+    )
+
+    # Reuse subdomains already discovered by a prior `hakuza recon` run if available,
+    # to avoid a redundant subfinder pass — otherwise run it fresh.
+    subdomains = []
+    latest = get_latest_recon(eng["id"], "subdomains", limit=1)
+    if latest:
+        subdomains = [s.strip() for s in latest[0]["content"].splitlines() if s.strip()]
+        console.print(f"[dim]Reusing {len(subdomains)} subdomains from a previous recon run.[/dim]")
+    else:
+        if check_tools().get("subfinder"):
+            console.print(f"[cyan]Running subfinder on {domain}...[/cyan]")
+            stdout, _, _ = run_tool(["subfinder", "-d", domain, "-silent"], timeout=90)
+            subdomains = [s.strip() for s in stdout.splitlines() if s.strip()]
+        else:
+            console.print("[yellow]subfinder not installed and no prior recon data — checking the bare domain only.[/yellow]")
+            subdomains = [domain]
+
+    if not subdomains:
+        console.print("[yellow]No subdomains to check.[/yellow]")
+        return
+
+    console.print(f"[cyan]Checking {len(subdomains)} subdomains for dangling-CNAME takeovers...[/cyan]\n")
+
+    import concurrent.futures
+    all_findings = []
+    with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console, transient=True) as prog:
+        task = prog.add_task(f"Scanning {len(subdomains)} subdomains...", total=len(subdomains))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
+            futures = {executor.submit(_takeover_check_one, sub): sub for sub in subdomains}
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    all_findings.extend(future.result())
+                except Exception:
+                    pass
+                prog.advance(task)
+
+    if not all_findings:
+        console.print("[green]No dangling CNAMEs or takeover indicators found.[/green]")
+        return
+
+    sev_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    all_findings.sort(key=lambda f: sev_order.get(f["severity"], 4))
+
+    tbl = Table(box=box.ROUNDED, header_style="bold cyan", expand=False)
+    tbl.add_column("Severity", width=10)
+    tbl.add_column("Subdomain")
+    tbl.add_column("Service")
+    tbl.add_column("CNAME")
+    sev_colors = {"critical": "bold red", "high": "bold orange3", "medium": "bold yellow", "low": "dim"}
+    for f in all_findings:
+        style = sev_colors.get(f["severity"], "white")
+        tbl.add_row(
+            f["severity"].upper(),
+            _rich_escape(f["subdomain"]),
+            _rich_escape(f["service"]) + ("" if f["confirmed"] else " (unconfirmed)"),
+            _rich_escape(f["cname"]),
+            style=style,
+        )
+    console.print(tbl)
+
+    confirmed = [f for f in all_findings if f["confirmed"]]
+    if confirmed:
+        console.print(f"\n[bold green]Persisting {len(confirmed)} confirmed takeover finding(s) to the engagement...[/bold green]")
+        for f in confirmed:
+            saved = add_finding(
+                engagement_id=eng["id"],
+                title=f"Subdomain Takeover — {f['subdomain']} ({f['service']})",
+                severity=f["severity"],
+                url=f["subdomain"],
+                description=f["detail"],
+                evidence=f"CNAME: {f['cname']}",
+                remediation=f"Remove the dangling CNAME record, or claim the resource immediately: {f['how']}",
+                tool="takeover",
+            )
+            console.print(f"  [green]+[/green] {saved['short_id']} — {saved['title']}")
+
+    console.print(
+        f"\n[dim]Checked: {len(subdomains)}  |  Findings: {len(all_findings)}  |  "
+        f"Confirmed (auto-saved): {len(confirmed)}[/dim]"
+    )
+
+
 def cmd_scan(args, console: Console) -> None:
     """
     hakuza scan [--target <override>] [--profile quick|full|api] [--nuclei-tags tags]
@@ -2005,16 +2277,18 @@ def cmd_scan(args, console: Console) -> None:
 
 def cmd_autopilot(args, console: Console) -> None:
     """
-    hakuza autopilot [--target <override>] [--profile quick|full] [--skip-ai] [--skip-scan]
+    hakuza autopilot [--target <override>] [--profile quick|full] [--skip-ai] [--skip-scan] [--skip-takeover]
 
     Unattended end-to-end pipeline for a fresh engagement:
-      1. recon     — subfinder, httpx, nmap
-      2. wayback    — historical URL mining (requires mod_recon_plus)
-      3. secrets    — exposed secret hunting (requires mod_recon_plus)
-      4. scan       — nuclei vulnerability scan
-      5. analyze    — AI triage of all findings (needs ANTHROPIC_API_KEY, skip with --skip-ai)
-      6. chain      — AI-built exploitation chains (same condition)
-      7. report     — final markdown + HTML report. Always runs: with an API key
+      1. recon      — subfinder, httpx, nmap
+      2. takeover   — subdomain takeover scan against recon's discovered subdomains;
+                       confirmed findings are auto-saved (skip with --skip-takeover)
+      3. wayback    — historical URL mining (requires mod_recon_plus)
+      4. secrets    — exposed secret hunting (requires mod_recon_plus)
+      5. scan       — nuclei vulnerability scan
+      6. analyze    — AI triage of all findings (needs ANTHROPIC_API_KEY, skip with --skip-ai)
+      7. chain      — AI-built exploitation chains (same condition)
+      8. report     — final markdown + HTML report. Always runs: with an API key
                        it's a full AI narrative report, without one it falls back
                        to a deterministic findings-only report (no analysis prose).
 
@@ -2029,6 +2303,7 @@ def cmd_autopilot(args, console: Console) -> None:
     profile = getattr(args, "profile", "quick") or "quick"
     skip_ai = getattr(args, "skip_ai", False)
     skip_scan = getattr(args, "skip_scan", False)
+    skip_takeover = getattr(args, "skip_takeover", False)
 
     primary_target = target_override or eng["target"]
 
@@ -2073,6 +2348,8 @@ def cmd_autopilot(args, console: Console) -> None:
     phases = [
         ("recon", cmd_recon, argparse.Namespace(target=target_override, passive=False, deep=(profile == "full"))),
     ]
+    if not skip_takeover:
+        phases.append(("takeover", cmd_takeover, argparse.Namespace(target=target_override)))
     if mod_recon_plus is not None:
         phases.append(("wayback", mod_recon_plus.cmd_wayback, argparse.Namespace(domain=None, filter="all", save=True)))
         phases.append(("secrets", mod_recon_plus.cmd_secrets, argparse.Namespace(url=target_override, js_only=False, deep=(profile == "full"))))
@@ -3989,6 +4266,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_auto.add_argument("--profile", choices=["quick", "full"], default="quick")
     p_auto.add_argument("--skip-ai", dest="skip_ai", action="store_true", help="Skip AI analyze/chain phases")
     p_auto.add_argument("--skip-scan", dest="skip_scan", action="store_true", help="Skip the nuclei scan phase")
+    p_auto.add_argument("--skip-takeover", dest="skip_takeover", action="store_true", help="Skip the subdomain takeover phase")
+
+    # --- takeover ---
+    p_takeover = sub.add_parser("takeover", help="Scan for subdomain takeover (dangling CNAMEs) — high-value, low-effort findings")
+    p_takeover.add_argument("--target", default=None, help="Target domain override (default: engagement target)")
 
     # --- import ---
     p_import = sub.add_parser("import", help="Import findings from tool output")
@@ -4211,6 +4493,7 @@ def main():
         "recon": cmd_recon,
         "scan": cmd_scan,
         "autopilot": cmd_autopilot,
+        "takeover": cmd_takeover,
         "import": cmd_import,
         "analyze": cmd_analyze,
         "advise": cmd_advise,

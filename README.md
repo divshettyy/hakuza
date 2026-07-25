@@ -35,6 +35,9 @@ Without an `ANTHROPIC_API_KEY` set, the AI-dependent phases (analyze/chain/repor
 | `hakuza scope` | Add/check/list scope entries (glob-matched) |
 | `hakuza add` / `findings` / `update` | Manual findings CRUD |
 | `hakuza analyze` / `chain` / `advise` | AI triage, exploitation chains, attack-vector suggestions |
+| `hakuza deduplicate` / `enrich` | AI-powered findings-list cleanup — merge duplicates, fill in missing CVSS/CWE/impact/remediation |
+| `hakuza prioritize` / `matrix` | AI remediation ordering (with optional BFSI regulatory-deadline weighting) and an attack-chain matrix across findings |
+| `hakuza diff-report` | Delta report between two findings exports — new/fixed/changed, no AI required |
 | `hakuza report` | Markdown + HTML report with risk gauge and finding cards |
 | `hakuza ad` / `network` / `lateral` | Active Directory / internal network testing modules |
 | `hakuza mobile` / `ios` / `cloud` / `iot` | Mobile, cloud, and IoT testing modules |
