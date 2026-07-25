@@ -208,9 +208,11 @@ jobs:
           go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
           go install -v github.com/projectdiscovery/katana/cmd/katana@latest
           go install -v github.com/tomnomnom/waybackurls@latest
-          echo "$HOME/go/bin" >> $GITHUB_PATH
-        env:
-          GOPATH: ${{ runner.temp }}/go
+          # 'go install' with no GOPATH override drops binaries in $HOME/go/bin,
+          # which is exactly what we add to PATH below. (A previous GOPATH override
+          # sent binaries to $RUNNER_TEMP/go/bin while PATH pointed at $HOME/go/bin,
+          # leaving every tool off PATH in later steps.)
+          echo "$HOME/go/bin" >> "$GITHUB_PATH"
 
       - name: Run HAKUZA autopilot against the authorized target
         env:
