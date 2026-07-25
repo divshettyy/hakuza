@@ -1440,8 +1440,10 @@ def cmd_wizard(args, console) -> None:
     console.print(f"[dim]To generate the full report, run:[/dim]")
     console.print(f"[bold cyan]  hakuza report --html --output {eng_name}_report.md[/bold cyan]")
     console.print()
-    console.print("[dim]The report includes: Executive Summary, Risk Matrix, Full Findings Detail,")
-    console.print("Attack Chains, Remediation Timeline, and Regulatory Impact (PCI-DSS, RBI, SEBI).[/dim]")
+    console.print(
+        "[dim]The report includes: Executive Summary, Risk Matrix, Full Findings Detail, "
+        "Attack Chains, Remediation Timeline, and Regulatory Impact (PCI-DSS, RBI, SEBI).[/dim]"
+    )
 
     # Final summary
     console.print()
