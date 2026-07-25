@@ -2003,18 +2003,6 @@ def _takeover_check_one(subdomain: str) -> list:
                 "confirmed": False,
             })
 
-    if cname and "s3" in cname:
-        s3_status, s3_body = _takeover_fetch(f"https://{subdomain}.s3.amazonaws.com/")
-        if "NoSuchBucket" in s3_body:
-            bucket_name = subdomain.split(".")[0]
-            findings.append({
-                "subdomain": subdomain, "cname": cname, "service": "Amazon S3 (bucket check)",
-                "severity": "critical",
-                "how": f"aws s3api create-bucket --bucket {bucket_name}",
-                "detail": f"S3 bucket '{bucket_name}' does not exist and can be claimed to serve content for {subdomain}.",
-                "confirmed": True,
-            })
-
     return findings
 
 
