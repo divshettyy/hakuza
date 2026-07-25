@@ -9309,9 +9309,25 @@ def _section(console: Console, title: str) -> None:
 def _offer_finding(console: Console, eng: dict, title: str, severity: str,
                    description: str, remediation: str, tool: str = "hakuza-mobile") -> None:
     """Prompt the tester to add a finding to the engagement DB."""
-    if Confirm.ask(f"\n[yellow]Add '[bold]{title}[/bold]' as a {severity.upper()} finding?[/yellow]", default=False):
-        url = Prompt.ask("  URL / identifier", default=eng.get("target", ""))
-        evidence = Prompt.ask("  Evidence (paste key line or leave blank)", default="")
+    # Guard against non-interactive stdin (piped input, CI, demo scripts):
+    # an unguarded Confirm/Prompt raises EOFError, which otherwise crashes the
+    # whole command with "Error: EOF when reading a line" after all the useful
+    # reference output has already printed. Degrade to "skip" instead.
+    try:
+        do_log = Confirm.ask(
+            f"\n[yellow]Add '[bold]{_rich_escape(str(title))}[/bold]' as a {severity.upper()} finding?[/yellow]",
+            default=False,
+        )
+    except (EOFError, KeyboardInterrupt):
+        console.print("\n[dim]No interactive input — skipping finding log.[/dim]")
+        return
+    if do_log:
+        try:
+            url = Prompt.ask("  URL / identifier", default=eng.get("target", ""))
+            evidence = Prompt.ask("  Evidence (paste key line or leave blank)", default="")
+        except (EOFError, KeyboardInterrupt):
+            url = eng.get("target", "")
+            evidence = ""
         f = add_finding(
             engagement_id=eng["id"],
             title=title,
