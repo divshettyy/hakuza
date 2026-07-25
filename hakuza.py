@@ -2357,7 +2357,7 @@ def cmd_analyze(args, console):
     console.print(Rule("[bold cyan]AI Deep Analysis[/bold cyan]"))
 
     prompt = f"""You are performing a comprehensive penetration testing analysis for: {eng['name']}
-Target: {eng.get('target_url', 'N/A')}
+Target: {eng.get('target', 'N/A')}
 Engagement type: {eng.get('type', 'web')}
 Client: {eng.get('client_name', 'N/A')}
 
@@ -2407,7 +2407,7 @@ Be specific. Use exact finding titles from the data. Do not pad with generic adv
         eng_dir = ENGAGEMENTS_DIR / eng["name"]
         eng_dir.mkdir(parents=True, exist_ok=True)
         out_path = eng_dir / f"analysis_{ts}.md"
-        header = f"# HAKUZA Analysis — {eng['name']}\n**Date:** {datetime.now().strftime('%Y-%m-%d %H:%M')}\n**Target:** {eng.get('target_url','N/A')}\n\n---\n\n"
+        header = f"# HAKUZA Analysis — {eng['name']}\n**Date:** {datetime.now().strftime('%Y-%m-%d %H:%M')}\n**Target:** {eng.get('target','N/A')}\n\n---\n\n"
         out_path.write_text(header + (full_response or ""), encoding="utf-8")
         console.print(f"\n[green]Analysis saved:[/green] {out_path}")
 
@@ -2430,7 +2430,7 @@ def cmd_advise(args, console):
     prompt = f"""You are a senior offensive security consultant. Generate a targeted attack playbook for:
 
 Engagement: {eng['name']}
-Target URL: {eng.get('target_url', 'N/A')}
+Target URL: {eng.get('target', 'N/A')}
 Scope: {eng.get('scope_notes', 'Full scope')}
 Engagement type: {eng.get('type', 'web')}
 Known technology stack: {eng.get('tech_stack', 'Unknown')}
@@ -2489,7 +2489,7 @@ def cmd_chain(args, console):
     console.print(Rule("[bold red]Vulnerability Chain Analysis[/bold red]"))
 
     prompt = f"""Perform advanced vulnerability chaining analysis for: {eng['name']}
-Target: {eng.get('target_url','N/A')}
+Target: {eng.get('target','N/A')}
 
 FINDINGS:
 {findings_text}
@@ -2616,7 +2616,7 @@ def cmd_web(args, console):
     eng = _require_engagement(console)
     client = get_client()
 
-    url = (getattr(args, "url", None) or eng.get("target_url") or "").strip()
+    url = (getattr(args, "url", None) or eng.get("target") or "").strip()
     if not url:
         console.print("[red]No target URL. Provide --url or set one in the engagement.[/red]")
         sys.exit(1)
@@ -2679,7 +2679,7 @@ def cmd_api(args, console):
     eng = _require_engagement(console)
     client = get_client()
 
-    url = (getattr(args, "url", None) or eng.get("target_url") or "").strip()
+    url = (getattr(args, "url", None) or eng.get("target") or "").strip()
     if not url:
         console.print("[red]No target URL. Provide --url or set one in the engagement.[/red]")
         sys.exit(1)
@@ -3061,7 +3061,7 @@ def cmd_threat(args, console):
 Sector: {sector.upper()} — {sector_context}
 Technology stack: {stack}
 Engagement: {eng['name']}
-Target: {eng.get('target_url','N/A')}
+Target: {eng.get('target','N/A')}
 
 ## 1. Threat Actor Landscape
 Top 3 APT groups / cybercriminal organisations currently targeting this sector + stack:
@@ -3699,7 +3699,7 @@ def cmd_chat(args, console):
     # Build context string
     if ctx_level == "minimal":
         ctx_block = (
-            f"Active engagement: {eng['name']} | Target: {eng.get('target_url','N/A')} | "
+            f"Active engagement: {eng['name']} | Target: {eng.get('target','N/A')} | "
             f"Findings: {counts.get('total',0)} total "
             f"({counts.get('critical',0)} Critical, {counts.get('high',0)} High)"
         )
@@ -3707,7 +3707,7 @@ def cmd_chat(args, console):
         ctx_block = (
             f"Active engagement: {eng['name']}\n"
             f"Client: {eng.get('client_name','N/A')}\n"
-            f"Target: {eng.get('target_url','N/A')}\n"
+            f"Target: {eng.get('target','N/A')}\n"
             f"Type: {eng.get('type','web')}\n"
             f"Scope: {eng.get('scope_notes','Full scope')}\n"
             f"Start date: {eng.get('start_date','N/A')}\n\n"
