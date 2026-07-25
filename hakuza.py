@@ -3994,6 +3994,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_import = sub.add_parser("import", help="Import findings from tool output")
     p_import.add_argument("file", help="File to import (CSV, XML, JSON, TXT)")
     p_import.add_argument("--format", choices=["nessus", "nuclei", "burp", "csv", "auto"], default="auto")
+    # cmd_import reads getattr(args, "source") to label the tool/source on
+    # imported findings, and the docstring documents `--source`, but the flag
+    # was never registered — so `hakuza import file --source nessus` errored
+    # with "unrecognized arguments". Register it (default None preserves the
+    # existing fall-back to the auto-detected format name).
+    p_import.add_argument("--source", default=None,
+                          help="Label the tool/source for imported findings "
+                               "(default: auto-detected format)")
 
     # --- analyze ---
     p_analyze = sub.add_parser("analyze", help="AI analysis of all findings")
