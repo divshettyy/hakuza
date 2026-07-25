@@ -2036,8 +2036,18 @@ def cmd_takeover(args, console: Console) -> None:
 
     # Reuse subdomains already discovered by a prior `hakuza recon` run if available,
     # to avoid a redundant subfinder pass — otherwise run it fresh.
+    # Only reuse cached recon when it belongs to the domain we're about to scan:
+    # if --target overrides the engagement to a *different* domain, the stored
+    # subdomains are for the wrong domain and must not be silently reused.
     subdomains = []
-    latest = get_latest_recon(eng["id"], "subdomains", limit=1)
+    eng_domain = _extract_domain(eng.get("target", ""))
+    can_reuse_recon = (domain == eng_domain)
+    latest = get_latest_recon(eng["id"], "subdomains", limit=1) if can_reuse_recon else None
+    if not can_reuse_recon:
+        console.print(
+            f"[dim]--target ({domain}) differs from the engagement domain "
+            f"({eng_domain or 'unset'}); enumerating fresh instead of reusing recon.[/dim]"
+        )
     if latest:
         subdomains = [s.strip() for s in latest[0]["content"].splitlines() if s.strip()]
         console.print(f"[dim]Reusing {len(subdomains)} subdomains from a previous recon run.[/dim]")
