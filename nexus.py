@@ -76,7 +76,7 @@ SEV_BADGE_STYLE = {
     "informational": ("[blue]", "[/blue]"),
 }
 
-ENGAGEMENT_TYPES = ["web", "api", "network", "mobile", "ad", "cloud", "red-team"]
+ENGAGEMENT_TYPES = ["web", "api", "network", "mobile", "ios", "ad", "cloud", "iot", "red-team"]
 FINDING_STATUSES = ["open", "confirmed", "remediated", "accepted", "fp"]
 
 BANNER = r"""
@@ -4276,7 +4276,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_init.add_argument("--client", dest="client", default="", help="Client name")
     p_init.add_argument("--target", dest="target", default="", help="Target URL")
     p_init.add_argument("--type", dest="type", default="web",
-                        choices=["web", "api", "mobile", "network", "cloud", "red-team"],
+                        choices=ENGAGEMENT_TYPES,
                         help="Engagement type")
     p_init.add_argument("--scope", dest="scope", default="", help="Scope notes")
 
@@ -4954,7 +4954,7 @@ def cmd_ad(args, console) -> None:
     Also prints a BloodHound Cypher query reference.
     """
     eng = _require_engagement(console)
-    client = get_client()
+    client = get_client_or_none()
 
     dc_ip    = getattr(args, "dc",     None) or eng.get("target", "<DC_IP>")
     domain   = getattr(args, "domain", None) or "<DOMAIN>"
@@ -5003,29 +5003,33 @@ def cmd_ad(args, console) -> None:
         f"Format every code block with triple backticks and the language tag (bash/powershell)."
     )
 
-    response = stream_to_console(
-        client,
-        [{"role": "user", "content": prompt}],
-        max_tokens=4096,
-        console=console,
-    )
-
-    # ------------------------------------------------------------------
-    # Save to file if requested
-    # ------------------------------------------------------------------
-    if do_save and response:
-        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        eng_dir = NEXUS_DIR / "engagements" / eng["name"]
-        reports_dir = eng_dir / "reports"
-        reports_dir.mkdir(parents=True, exist_ok=True)
-        out_path = reports_dir / f"ad_playbook_{ts}.md"
-        header = (
-            f"# AD Pentest Playbook — {eng['name']}\n"
-            f"**Date:** {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}\n"
-            f"**DC:** {dc_ip}  |  **Domain:** {domain}\n\n---\n\n"
+    if client is None:
+        console.print("[dim]Set ANTHROPIC_API_KEY for an AI-generated, target-tailored playbook.[/dim]")
+        response = None
+    else:
+        response = stream_to_console(
+            client,
+            [{"role": "user", "content": prompt}],
+            max_tokens=4096,
+            console=console,
         )
-        out_path.write_text(header + response)
-        console.print(f"\n[green]Playbook saved:[/green] {out_path}")
+
+        # ------------------------------------------------------------------
+        # Save to file if requested
+        # ------------------------------------------------------------------
+        if do_save and response:
+            ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            eng_dir = NEXUS_DIR / "engagements" / eng["name"]
+            reports_dir = eng_dir / "reports"
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            out_path = reports_dir / f"ad_playbook_{ts}.md"
+            header = (
+                f"# AD Pentest Playbook — {eng['name']}\n"
+                f"**Date:** {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}\n"
+                f"**DC:** {dc_ip}  |  **Domain:** {domain}\n\n---\n\n"
+            )
+            out_path.write_text(header + response)
+            console.print(f"\n[green]Playbook saved:[/green] {out_path}")
 
     # ------------------------------------------------------------------
     # BloodHound Cypher reference
@@ -5429,7 +5433,7 @@ def cmd_network(args, console) -> None:
     service enumeration, protocol attacks, MITM, and pivoting.
     """
     eng = _require_engagement(console)
-    client = get_client()
+    client = get_client_or_none()
 
     cidr_range = getattr(args, "range",   None) or eng.get("target", "<RANGE>")
     profile    = getattr(args, "profile", "quick") or "quick"
@@ -5522,29 +5526,32 @@ def cmd_network(args, console) -> None:
         f"to hit first given a BFSI network, with one-line rationale each."
     )
 
-    response = stream_to_console(
-        client,
-        [{"role": "user", "content": prompt}],
-        max_tokens=4096,
-        console=console,
-    )
-
-    # ------------------------------------------------------------------
-    # Save to file
-    # ------------------------------------------------------------------
-    if do_save and response:
-        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        eng_dir = NEXUS_DIR / "engagements" / eng["name"]
-        reports_dir = eng_dir / "reports"
-        reports_dir.mkdir(parents=True, exist_ok=True)
-        out_path = reports_dir / f"network_playbook_{ts}.md"
-        header = (
-            f"# Network Pentest Playbook — {eng['name']}\n"
-            f"**Date:** {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}\n"
-            f"**Range:** {cidr_range}  |  **Profile:** {profile}\n\n---\n\n"
+    if client is None:
+        console.print("[dim]Set ANTHROPIC_API_KEY for an AI-generated, target-tailored playbook.[/dim]")
+    else:
+        response = stream_to_console(
+            client,
+            [{"role": "user", "content": prompt}],
+            max_tokens=4096,
+            console=console,
         )
-        out_path.write_text(header + response)
-        console.print(f"\n[green]Playbook saved:[/green] {out_path}")
+
+        # ------------------------------------------------------------------
+        # Save to file
+        # ------------------------------------------------------------------
+        if do_save and response:
+            ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            eng_dir = NEXUS_DIR / "engagements" / eng["name"]
+            reports_dir = eng_dir / "reports"
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            out_path = reports_dir / f"network_playbook_{ts}.md"
+            header = (
+                f"# Network Pentest Playbook — {eng['name']}\n"
+                f"**Date:** {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}\n"
+                f"**Range:** {cidr_range}  |  **Profile:** {profile}\n\n---\n\n"
+            )
+            out_path.write_text(header + response)
+            console.print(f"\n[green]Playbook saved:[/green] {out_path}")
 
     # ------------------------------------------------------------------
     # Offer to log network findings
@@ -5783,7 +5790,7 @@ def cmd_lateral(args, console) -> None:
     Prompts for current access type, shows exact commands for each scenario.
     """
     eng = _require_engagement(console)
-    client = get_client()
+    client = get_client_or_none()
 
     technique = getattr(args, "technique",  None)
     from_host = getattr(args, "from_host",  None) or "<SOURCE_HOST>"
@@ -5865,12 +5872,15 @@ def cmd_lateral(args, console) -> None:
         f"All commands must be copy-paste ready with specific syntax."
     )
 
-    response = stream_to_console(
-        client,
-        [{"role": "user", "content": prompt}],
-        max_tokens=3000,
-        console=console,
-    )
+    if client is None:
+        console.print("[dim]Set ANTHROPIC_API_KEY for an AI-generated, target-tailored lateral movement plan.[/dim]")
+    else:
+        stream_to_console(
+            client,
+            [{"role": "user", "content": prompt}],
+            max_tokens=3000,
+            console=console,
+        )
 
     # ------------------------------------------------------------------
     # Technique quick-reference table
