@@ -217,13 +217,23 @@ jobs:
       - name: Run HAKUZA autopilot against the authorized target
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Pass workflow_dispatch inputs through the environment rather than
+          # interpolating ${{ ... }} straight into the shell. Direct interpolation
+          # is the classic GitHub Actions script-injection sink (a crafted input
+          # like '"; rm -rf / #' would be spliced into the command). Quoting the
+          # env vars keeps the values inert as data. (workflow_dispatch already
+          # requires repo write to trigger, so exposure is low — this is defence
+          # in depth against a well-known anti-pattern.)
+          TARGET: ${{ github.event.inputs.target }}
+          PROFILE: ${{ github.event.inputs.profile || 'quick' }}
+          RUN_ID: ${{ github.run_id }}
         run: |
-          python3 hakuza.py init "ci-run-${{ github.run_id }}" \
+          python3 hakuza.py init "ci-run-${RUN_ID}" \
             --client "CI Pipeline" \
-            --target "${{ github.event.inputs.target }}" \
+            --target "$TARGET" \
             --type web
-          python3 hakuza.py scope --add "${{ github.event.inputs.target }}/*"
-          python3 hakuza.py autopilot --profile "${{ github.event.inputs.profile || 'quick' }}"
+          python3 hakuza.py scope --add "${TARGET}/*"
+          python3 hakuza.py autopilot --profile "$PROFILE"
           python3 hakuza.py report --html
 
       - name: Upload HAKUZA scan report + findings DB
