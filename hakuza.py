@@ -2064,6 +2064,19 @@ def cmd_takeover(args, console: Console) -> None:
         console.print("[yellow]No subdomains to check.[/yellow]")
         return
 
+    # Bound the worst case: each subdomain issues up to 2 dig + 2 curl calls with
+    # multi-second timeouts. For a large org (subfinder can return thousands) that
+    # can otherwise stall an autopilot run for many minutes if DNS/HTTP time out.
+    # Cap transparently rather than silently hanging.
+    _TAKEOVER_MAX_SUBDOMAINS = 750
+    if len(subdomains) > _TAKEOVER_MAX_SUBDOMAINS:
+        console.print(
+            f"[yellow]{len(subdomains)} subdomains discovered — capping the takeover scan "
+            f"at the first {_TAKEOVER_MAX_SUBDOMAINS} to bound runtime. "
+            f"Re-run with a narrower --target to cover the rest.[/yellow]"
+        )
+        subdomains = subdomains[:_TAKEOVER_MAX_SUBDOMAINS]
+
     console.print(f"[cyan]Checking {len(subdomains)} subdomains for dangling-CNAME takeovers...[/cyan]\n")
 
     import concurrent.futures
