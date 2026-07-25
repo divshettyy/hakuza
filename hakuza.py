@@ -6724,14 +6724,14 @@ If no duplicates are found, return an empty array: []"""
     for g in valid_groups:
         pf = g["primary"]
         dup_titles = "\n".join(
-            f"{d.get('short_id', d['id'][:8])}: {d.get('title', '')[:50]}"
+            _rich_escape(f"{d.get('short_id', d['id'][:8])}: {d.get('title', '')[:50]}")
             for d in g["duplicates"]
         )
         table.add_row(
-            f"{pf.get('short_id', pf['id'][:8])}: {pf.get('title', '')[:60]}",
+            _rich_escape(f"{pf.get('short_id', pf['id'][:8])}: {pf.get('title', '')[:60]}"),
             sev_badge(pf.get("severity", "info")),
             dup_titles,
-            g["reason"][:120],
+            _rich_escape(g["reason"][:120]),
         )
 
     console.print(table)
@@ -6754,13 +6754,13 @@ If no duplicates are found, return an empty array: []"""
 
         if not auto:
             console.print(
-                f"\n[bold]Group:[/bold] Keep [cyan]{pf.get('short_id', pf['id'][:8])}[/cyan] "
-                f"— [italic]{pf.get('title', '')}[/italic]"
+                f"\n[bold]Group:[/bold] Keep [cyan]{_rich_escape(str(pf.get('short_id', pf['id'][:8])))}[/cyan] "
+                f"— [italic]{_rich_escape(str(pf.get('title', '')))}[/italic]"
             )
             for df in g["duplicates"]:
                 console.print(
-                    f"  Mark duplicate: [red]{df.get('short_id', df['id'][:8])}[/red] "
-                    f"— {df.get('title', '')[:60]}"
+                    f"  Mark duplicate: [red]{_rich_escape(str(df.get('short_id', df['id'][:8])))}[/red] "
+                    f"— {_rich_escape(str(df.get('title', ''))[:60])}"
                 )
             apply = Confirm.ask("  Mark these as duplicates?", default=True)
 
@@ -6986,13 +6986,13 @@ def cmd_enrich(args, console: Console) -> None:
                 if r["cvss_score"] is not None else "[dim]-[/dim]"
             )
             table.add_row(
-                r["short_id"],
+                _rich_escape(str(r["short_id"])),
                 sev_badge(r["severity"]),
-                r["title"][:50],
+                _rich_escape(str(r["title"])[:50]),
                 before_cvss,
                 after_cvss,
-                (r["cwe"] or "-")[:30],
-                (r["owasp"] or "-")[:25],
+                _rich_escape((r["cwe"] or "-")[:30]),
+                _rich_escape((r["owasp"] or "-")[:25]),
             )
 
         console.print(table)
@@ -7162,8 +7162,8 @@ Return ONLY valid JSON (no markdown, no preamble):
     console.print(Rule("[bold red]Fix This First[/bold red]", style="dim red"))
     console.print(
         Panel(
-            f"[bold]Finding:[/bold] [cyan]{fix_first_id}[/cyan]\n\n"
-            f"{fix_first_reason}",
+            f"[bold]Finding:[/bold] [cyan]{_rich_escape(str(fix_first_id))}[/cyan]\n\n"
+            f"{_rich_escape(str(fix_first_reason))}",
             title="[bold red]  Highest Risk-Reduction Fix[/bold red]",
             border_style="red",
             expand=False,
@@ -7206,13 +7206,13 @@ def _render_priority_table(prioritized: list, bfsi: bool, console: Console) -> N
         title = item.get("title", "")[:60]
         cvss = str(item.get("cvss", "-"))
         effort_key = str(item.get("effort", "")).lower()
-        effort_str = effort_style.get(effort_key, effort_key)
+        effort_str = effort_style.get(effort_key, _rich_escape(effort_key))
         risk_key = item.get("business_risk", "")
-        risk_str = risk_style.get(risk_key, risk_key)
-        deadline = item.get("deadline", "")
-        rationale = item.get("rationale", "")[:100]
+        risk_str = risk_style.get(risk_key, _rich_escape(str(risk_key)))
+        deadline = _rich_escape(str(item.get("deadline", "")))
+        rationale = _rich_escape(str(item.get("rationale", ""))[:100])
 
-        table.add_row(rank, f"{sid}: {title}", cvss, effort_str, risk_str, deadline, rationale)
+        table.add_row(rank, _rich_escape(f"{sid}: {title}"), cvss, effort_str, risk_str, deadline, rationale)
 
     console.print(table)
 
@@ -7228,7 +7228,7 @@ def _render_priority_matrix(prioritized: list, console: Console) -> None:
         is_high_impact = risk_key in ("critical", "high")
         is_quick = effort_key == "quick"
 
-        entry = f"{item.get('short_id', '?')}: {item.get('title', '')[:35]}"
+        entry = _rich_escape(f"{item.get('short_id', '?')}: {item.get('title', '')[:35]}")
 
         if is_high_impact and is_quick:
             q1.append(entry)          # Quick Wins
@@ -7275,7 +7275,7 @@ def _render_priority_timeline(prioritized: list, bfsi: bool, console: Console) -
     for item in prioritized:
         risk = str(item.get("business_risk", "medium")).lower()
         effort = str(item.get("effort", "moderate")).lower()
-        entry = f"{item.get('short_id', '?')}: {item.get('title', '')[:50]}"
+        entry = _rich_escape(f"{item.get('short_id', '?')}: {item.get('title', '')[:50]}")
 
         if risk == "critical" or (risk == "high" and effort == "quick"):
             week1.append(entry)
@@ -7510,7 +7510,7 @@ def _render_chain_matrix_table(
         row_sid = row_f.get("short_id", row_f["id"][:8])
         row_sev = (row_f.get("severity") or "info").lower()
         sev_label = sev_abbr.get(row_sev, "?")
-        row_label = f"{row_sid[:10]} [{sev_label}]"
+        row_label = _rich_escape(f"{row_sid[:10]} [{sev_label}]")
 
         cells = []
         for col_sid in col_ids:
@@ -7539,20 +7539,20 @@ def _render_top_chains(top_chains: list, console: Console) -> None:
     for i, chain in enumerate(top_chains[:3], start=1):
         sev = (chain.get("severity") or "medium").lower()
         color = sev_colors.get(sev, "cyan")
-        cvss = chain.get("cvss_chain_score", "?")
+        cvss = _rich_escape(str(chain.get("cvss_chain_score", "?")))
         steps = chain.get("steps", [])
-        steps_text = "\n".join(f"  {j}. {s}" for j, s in enumerate(steps, start=1))
+        steps_text = "\n".join(f"  {j}. {_rich_escape(str(s))}" for j, s in enumerate(steps, start=1))
 
         body = (
             f"[bold]Severity:[/bold] {sev_badge(sev)}  [bold]CVSS Chain:[/bold] {cvss}\n\n"
             f"[bold underline]Steps:[/bold underline]\n{steps_text}\n\n"
-            f"[bold]End Impact:[/bold] {chain.get('end_impact', 'N/A')}"
+            f"[bold]End Impact:[/bold] {_rich_escape(str(chain.get('end_impact', 'N/A')))}"
         )
 
         console.print(
             Panel(
                 body,
-                title=f"[bold {color}]  Chain {i}: {chain.get('chain_title', 'Unknown')}[/bold {color}]",
+                title=f"[bold {color}]  Chain {i}: {_rich_escape(str(chain.get('chain_title', 'Unknown')))}[/bold {color}]",
                 border_style=color,
                 expand=False,
             )
