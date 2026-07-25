@@ -4463,11 +4463,75 @@ def build_parser() -> argparse.ArgumentParser:
     p_diff.add_argument("--output", metavar="FILE",
                         help="Save delta as JSON")
 
+    # --- serve: browser-based web dashboard ---
+    p_serve = sub.add_parser("serve", help="Launch the browser-based web dashboard (Flask)")
+    p_serve.add_argument("--host", default="127.0.0.1", metavar="HOST",
+                         help="Bind host (default: 127.0.0.1 — do not expose publicly)")
+    p_serve.add_argument("--port", type=int, default=7373, metavar="PORT",
+                         help="Bind port (default: 7373)")
+    p_serve.add_argument("--debug", action="store_true",
+                         help="Enable Flask debug mode (RCE-risky Werkzeug debugger — localhost only)")
+    p_serve.add_argument("--no-browser", dest="no_browser", action="store_true",
+                         help="Do not auto-open a browser tab")
+
     # --- recon-plus module: wayback, secrets, fuzz, wizard, scope, config ---
     if mod_recon_plus is not None:
         mod_recon_plus.register_argparse(sub)
 
     return parser
+
+
+def cmd_serve(args, console: Console) -> None:
+    """
+    hakuza serve [--host H] [--port P] [--debug] [--no-browser]
+
+    Launch the browser-based web dashboard (webapp/) — a read-only view over the
+    engagement database with a risk gauge, severity breakdown, findings table,
+    and per-finding detail. Debug mode is off unless --debug is passed.
+    """
+    webapp_dir = Path(__file__).resolve().parent / "webapp"
+    app_path = webapp_dir / "app.py"
+    if not app_path.exists():
+        console.print(f"[red]Web dashboard not found at {webapp_dir}[/red]")
+        return
+
+    try:
+        # Import the Flask app from webapp/app.py. app.py adds the repo root to
+        # sys.path and imports this same hakuza module for its DB helpers.
+        if str(webapp_dir) not in sys.path:
+            sys.path.insert(0, str(webapp_dir))
+        import importlib
+        web_app_mod = importlib.import_module("app")
+    except ImportError as exc:
+        console.print(f"[red]Could not load the web dashboard:[/red] {_rich_escape(str(exc))}")
+        console.print("[dim]Install Flask first: pip install -r requirements.txt[/dim]")
+        return
+
+    host = getattr(args, "host", "127.0.0.1")
+    port = getattr(args, "port", 7373)
+    debug = getattr(args, "debug", False)
+    url = f"http://{host}:{port}"
+
+    console.print(Panel(
+        f"[bold]HAKUZA Web Dashboard[/bold]\n"
+        f"[cyan]{url}[/cyan]\n"
+        + ("[yellow]Debug mode ON — Werkzeug debugger is live; localhost only.[/yellow]\n" if debug else "")
+        + "[dim]Read-only view of ~/.hakuza/hakuza.db · Ctrl-C to stop[/dim]",
+        title="[bold green]serve[/bold green]", border_style="green", expand=False,
+    ))
+
+    if not getattr(args, "no_browser", False):
+        try:
+            import webbrowser
+            webbrowser.open(url)
+        except Exception:
+            pass
+
+    try:
+        web_app_mod.app.run(host=host, port=port, debug=debug)
+    except OSError as exc:
+        console.print(f"[red]Could not start server:[/red] {_rich_escape(str(exc))}")
+        console.print(f"[dim]Port {port} may be in use — try `hakuza serve --port 8080`.[/dim]")
 
 
 def main():
@@ -4525,6 +4589,7 @@ def main():
         "prioritize":  cmd_prioritize,
         "matrix":      cmd_matrix,
         "diff-report": cmd_diff_report,
+        "serve":       cmd_serve,
     }
 
     if mod_recon_plus is not None:

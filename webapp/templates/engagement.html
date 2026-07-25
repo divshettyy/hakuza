@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% block title %}{{ eng.name }}{% endblock %}
+{% block crumb %}<a href="{{ url_for('index') }}">Engagements</a><span class="sep">/</span>{{ eng.name }}{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>{{ eng.name }}</h1>
+  <div class="sub">
+    {{ eng.client }} · <span class="pill">{{ eng.type }}</span>
+    <span class="pill status-pill">{{ eng.status }}</span>
+    · started {{ eng.start_date }}
+  </div>
+</div>
+
+<div class="toolbar">
+  {% if has_report %}
+    <a class="btn" href="{{ url_for('open_report', name=eng.name) }}" target="_blank" rel="noopener">
+      &#128196; Open latest HTML report
+    </a>
+  {% else %}
+    <span class="btn" style="opacity:.55;cursor:default" title="Run `hakuza report --html`">
+      &#128196; No HTML report yet
+    </span>
+  {% endif %}
+</div>
+
+<div class="panels">
+  <div style="display:flex;flex-direction:column;gap:22px">
+    <div class="panel gauge-wrap">
+      <h2>Risk Score</h2>
+      {{ gauge_svg|safe }}{# numeric-only SVG, no finding text — safe #}
+      <div class="risk-caption">
+        Weighted across {{ summary.total }} finding{{ '' if summary.total == 1 else 's' }}
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Engagement</h2>
+      <ul class="meta-list">
+        <li><span class="k">Client</span><span class="v">{{ eng.client }}</span></li>
+        <li><span class="k">Target</span><span class="v">{{ eng.target }}</span></li>
+        <li><span class="k">Tester</span><span class="v">{{ eng.tester }}</span></li>
+        <li><span class="k">Type</span><span class="v">{{ eng.type }}</span></li>
+        <li><span class="k">Status</span><span class="v">{{ eng.status }}</span></li>
+        {% if eng.scope %}<li><span class="k">Scope</span><span class="v">{{ eng.scope }}</span></li>{% endif %}
+      </ul>
+    </div>
+  </div>
+
+  <div style="display:flex;flex-direction:column;gap:22px">
+    <div class="panel">
+      <h2>Severity Breakdown</h2>
+      {{ bar_svg|safe }}{# numeric-only SVG, no finding text — safe #}
+    </div>
+
+    <div class="panel">
+      <h2>Recon Summary</h2>
+      {% set subs = recon.get('subdomains', 0) %}
+      {% set hosts = recon.get('hosts', 0) %}
+      {% set ports = recon.get('ports', 0) %}
+      {% set urls = recon.get('urls', 0) %}
+      {% if subs or hosts or ports or urls %}
+        <div class="recon-grid">
+          <div class="recon-stat"><div class="num">{{ subs }}</div><div class="cap">Subdomains</div></div>
+          <div class="recon-stat"><div class="num">{{ hosts }}</div><div class="cap">Live Hosts</div></div>
+          <div class="recon-stat"><div class="num">{{ ports }}</div><div class="cap">Port Scans</div></div>
+          <div class="recon-stat"><div class="num">{{ urls }}</div><div class="cap">URLs</div></div>
+        </div>
+      {% else %}
+        <div style="color:var(--muted);font-size:13.5px">
+          No recon data captured yet. Run <span class="mono">hakuza recon</span>.
+        </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<div class="page-head" style="margin-bottom:14px">
+  <h1 style="font-size:19px">Findings</h1>
+</div>
+
+<div class="table-wrap">
+  {% if not findings %}
+    <div class="empty">No findings recorded for this engagement yet.</div>
+  {% else %}
+  <div class="table-scroll">
+  <table>
+    <thead>
+      <tr>
+        <th>Severity</th><th>ID</th><th>Title</th><th>CVSS</th><th>Category</th><th>Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for f in findings %}
+      {% set sev = normalize_sev(f.severity) %}
+      <tr>
+        <td class="sev-cell">
+          <span class="badge" style="color:{{ SEV_COLORS[sev] }};background:{{ SEV_BG[sev] }}">
+            <span class="dot" style="background:{{ SEV_COLORS[sev] }}"></span>{{ sev }}
+          </span>
+        </td>
+        <td class="sid">{{ f.short_id or '—' }}</td>
+        <td class="f-title">
+          <a href="{{ url_for('finding_detail', name=eng.name, finding_id=f.id) }}">{{ f.title }}</a>
+        </td>
+        <td>{% if f.cvss_score is not none %}{{ f.cvss_score }}{% else %}<span class="sid">—</span>{% endif %}</td>
+        <td>{{ f.owasp or f.category or '—' }}</td>
+        <td><span class="pill status-pill">{{ f.status }}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // Trigger the gauge fill animation: ease stroke-dashoffset to its target.
+  window.addEventListener('load', function () {
+    var p = document.querySelector('.gauge-fill-path');
+    if (p) {
+      requestAnimationFrame(function () {
+        p.style.strokeDashoffset = p.getAttribute('data-offset-target');
+      });
+    }
+  });
+</script>
+{% endblock %}

@@ -2,3 +2,4 @@ anthropic>=0.105.0
 rich>=13.9.0
 markdown2>=2.5.0
 requests>=2.31.0  # optional — mod_recon_plus.py degrades gracefully without it, but recommended
+flask>=3.0.0      # powers `hakuza serve` — the browser-based web dashboard (webapp/)

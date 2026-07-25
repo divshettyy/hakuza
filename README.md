@@ -44,6 +44,7 @@ Without an `ANTHROPIC_API_KEY` set, the AI-dependent phases (analyze/chain/repor
 | `hakuza ai-audit` | LLM/AI system security audit (28 tests) |
 | `hakuza wizard` | Guided walkthrough for demos |
 | `hakuza dashboard` | Live terminal dashboard for the current engagement |
+| `hakuza serve` | Browser-based web dashboard (Flask) — read-only view of all engagements |
 
 Run `hakuza --help` or `hakuza <command> --help` for full details — 40+ commands total.
 
@@ -57,6 +58,22 @@ python3 hakuza.py autopilot --profile quick
 ```
 
 State lives in `~/.hakuza/` (SQLite DB + per-engagement artifact directories), separate from this repo.
+
+## Web dashboard (`hakuza serve`)
+
+```bash
+hakuza serve                 # http://127.0.0.1:7373, opens a browser tab
+hakuza serve --port 8080     # or run it directly: cd webapp && python3 run.py
+```
+
+A dark-themed Flask dashboard (`webapp/`) rendering the same engagement DB the CLI
+uses — engagement cards with per-severity finding counts and an animated risk meter,
+a per-engagement view with the SVG risk gauge, severity bar chart, recon summary and a
+findings table, click-through finding detail, and a link to the latest generated HTML
+report. It reuses hakuza.py's own DB helpers and report colour palette so the web UI and
+the CLI-generated HTML report look identical. It is **read-only** against the database
+and binds to `127.0.0.1` only; the Werkzeug debugger stays off unless `--debug` (or
+`HAKUZA_WEB_DEBUG=1`) is set explicitly.
 
 ## Architecture
 

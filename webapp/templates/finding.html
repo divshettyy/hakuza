@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}{{ f.title }}{% endblock %}
+{% block crumb %}
+  <a href="{{ url_for('index') }}">Engagements</a><span class="sep">/</span>
+  <a href="{{ url_for('engagement', name=eng.name) }}">{{ eng.name }}</a><span class="sep">/</span>
+  {{ f.short_id or 'finding' }}
+{% endblock %}
+
+{% block content %}
+{% set sev = normalize_sev(f.severity) %}
+
+<div class="sev-banner" style="background:{{ SEV_BG[sev] }};border-color:{{ SEV_COLORS[sev] }}">
+  <span class="badge" style="color:{{ SEV_COLORS[sev] }};background:transparent;border:1px solid {{ SEV_COLORS[sev] }}">
+    <span class="dot" style="background:{{ SEV_COLORS[sev] }}"></span>{{ sev }}
+  </span>
+  <span class="big" style="color:{{ SEV_COLORS[sev] }}">{{ f.short_id or '' }}</span>
+</div>
+
+<div class="page-head">
+  <h1>{{ f.title }}</h1>
+  <div class="sub">Tool: {{ f.tool or 'manual' }} · reported {{ f.created_at[:10] if f.created_at else '' }}</div>
+</div>
+
+<div class="kv-row">
+  {% if f.cvss_score is not none %}<div class="kv"><div class="k">CVSS</div><div class="v">{{ f.cvss_score }}</div></div>{% endif %}
+  {% if f.cvss_vector %}<div class="kv"><div class="k">Vector</div><div class="v mono" style="font-weight:500">{{ f.cvss_vector }}</div></div>{% endif %}
+  {% if f.cwe %}<div class="kv"><div class="k">CWE</div><div class="v">{{ f.cwe }}</div></div>{% endif %}
+  {% if f.owasp %}<div class="kv"><div class="k">OWASP</div><div class="v">{{ f.owasp }}</div></div>{% endif %}
+  {% if f.mitre %}<div class="kv"><div class="k">MITRE</div><div class="v">{{ f.mitre }}</div></div>{% endif %}
+  <div class="kv"><div class="k">Status</div><div class="v">{{ f.status }}</div></div>
+</div>
+
+{% if f.url %}
+<div class="section">
+  <h2>Affected URL</h2>
+  <div class="body mono" style="font-size:13px">{{ f.url }}</div>
+</div>
+{% endif %}
+
+{% if f.description %}
+<div class="section">
+  <h2>Description</h2>
+  <div class="body">{{ f.description }}</div>
+</div>
+{% endif %}
+
+{% if f.impact %}
+<div class="section">
+  <h2>Impact</h2>
+  <div class="body">{{ f.impact }}</div>
+</div>
+{% endif %}
+
+{% if f.evidence %}
+<div class="section">
+  <h2>Evidence</h2>
+  <pre class="body">{{ f.evidence }}</pre>
+</div>
+{% endif %}
+
+{% if f.remediation %}
+<div class="section">
+  <h2>Remediation</h2>
+  <div class="body">{{ f.remediation }}</div>
+</div>
+{% endif %}
+
+{% if f.refs %}
+<div class="section">
+  <h2>References</h2>
+  <div class="body">{{ f.refs }}</div>
+</div>
+{% endif %}
+
+{% if f.notes %}
+<div class="section">
+  <h2>Notes</h2>
+  <div class="body">{{ f.notes }}</div>
+</div>
+{% endif %}
+
+<div class="toolbar" style="margin-top:8px">
+  <a class="btn" href="{{ url_for('engagement', name=eng.name) }}">&#8592; Back to {{ eng.name }}</a>
+</div>
+{% endblock %}
