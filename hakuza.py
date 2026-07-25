@@ -3968,8 +3968,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     # --- recon ---
     p_recon = sub.add_parser("recon", help="AI-guided reconnaissance")
-    p_recon.add_argument("--url", default=None, help="Target URL override")
+    # cmd_recon reads args.target; the flag was previously registered as --url
+    # (dest 'url'), so the override was silently ignored. Register --target
+    # (dest 'target') and keep --url as a backwards-compatible alias.
+    p_recon.add_argument("--target", "--url", dest="target", default=None,
+                         help="Target URL override (default: engagement target)")
     p_recon.add_argument("--passive", action="store_true", help="Passive recon only")
+    p_recon.add_argument("--deep", action="store_true",
+                         help="Deep scan: also port-scan discovered live hosts")
 
     # --- scan ---
     p_scan = sub.add_parser("scan", help="Run automated scans")
