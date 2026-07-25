@@ -6497,22 +6497,31 @@ def _parse_json_from_response(raw: str) -> object:
     """
     # Strip ```json ... ``` or ``` ... ``` fences
     cleaned = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip()
-    # Try to locate the first [ or {
-    for start_char, end_char in [("[", "]"), ("{", "}")]:
-        idx = cleaned.find(start_char)
-        if idx != -1:
-            # Find matching closing bracket
-            depth = 0
-            for i, ch in enumerate(cleaned[idx:], start=idx):
-                if ch == start_char:
-                    depth += 1
-                elif ch == end_char:
-                    depth -= 1
-                    if depth == 0:
-                        try:
-                            return json.loads(cleaned[idx: i + 1])
-                        except json.JSONDecodeError:
-                            break
+    # Locate the outermost container. We must try whichever of '{' or '['
+    # appears FIRST in the string — otherwise an object that merely *contains*
+    # an array (e.g. {"prioritized": [...]}) gets mis-parsed as that inner
+    # array, breaking prioritize/matrix which expect a top-level object.
+    brace_idx = cleaned.find("{")
+    bracket_idx = cleaned.find("[")
+    candidates = []
+    if brace_idx != -1:
+        candidates.append((brace_idx, "{", "}"))
+    if bracket_idx != -1:
+        candidates.append((bracket_idx, "[", "]"))
+    candidates.sort()  # earliest opening char = outermost container
+    for idx, start_char, end_char in candidates:
+        # Find matching closing bracket
+        depth = 0
+        for i, ch in enumerate(cleaned[idx:], start=idx):
+            if ch == start_char:
+                depth += 1
+            elif ch == end_char:
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(cleaned[idx: i + 1])
+                    except json.JSONDecodeError:
+                        break
     # Last resort — try parsing the whole cleaned string
     try:
         return json.loads(cleaned)
