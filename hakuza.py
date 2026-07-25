@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-NEXUS — Unified Penetration Testing Platform v2.0
+HAKUZA — Unified Penetration Testing Platform v2.0
 AI-augmented security testing with full engagement lifecycle
 
 Divith D Shetty | CEH · CRTP · CAISP
@@ -17,6 +17,7 @@ import shutil
 import uuid
 import csv
 import math
+import html
 import textwrap
 import xml.etree.ElementTree as ET
 import argparse
@@ -45,10 +46,10 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 VERSION = "2.0.0"
-NEXUS_DIR = Path.home() / ".nexus"
-DB_PATH = NEXUS_DIR / "nexus.db"
-CONFIG_PATH = NEXUS_DIR / "config.json"
-ENGAGEMENTS_DIR = NEXUS_DIR / "engagements"
+HAKUZA_DIR = Path.home() / ".hakuza"
+DB_PATH = HAKUZA_DIR / "hakuza.db"
+CONFIG_PATH = HAKUZA_DIR / "config.json"
+ENGAGEMENTS_DIR = HAKUZA_DIR / "engagements"
 
 SEVERITY_ORDER = {
     "critical": 0,
@@ -81,12 +82,12 @@ ENGAGEMENT_TYPES = ["web", "api", "network", "mobile", "ios", "ad", "cloud", "io
 FINDING_STATUSES = ["open", "confirmed", "remediated", "accepted", "fp"]
 
 BANNER = r"""
- ███╗   ██╗███████╗██╗  ██╗██╗   ██╗███████╗
- ████╗  ██║██╔════╝╚██╗██╔╝██║   ██║██╔════╝
- ██╔██╗ ██║█████╗   ╚███╔╝ ██║   ██║███████╗
- ██║╚██╗██║██╔══╝   ██╔██╗ ██║   ██║╚════██║
- ██║ ╚████║███████╗██╔╝ ██╗╚██████╔╝███████║
- ╚═╝  ╚═══╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝
+ ██╗  ██╗ █████╗ ██╗  ██╗██╗   ██╗███████╗ █████╗
+ ██║  ██║██╔══██╗██║ ██╔╝██║   ██║╚══███╔╝██╔══██╗
+ ███████║███████║█████╔╝ ██║   ██║  ███╔╝ ███████║
+ ██╔══██║██╔══██║██╔═██╗ ██║   ██║ ███╔╝  ██╔══██║
+ ██║  ██║██║  ██║██║  ██╗╚██████╔╝███████╗██║  ██║
+ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═╝
 """
 
 BANNER_SUBTITLE = (
@@ -99,7 +100,7 @@ BANNER_SUBTITLE = (
 # SYSTEM PROMPT  (cached on every AI call)
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = """You are NEXUS, an AI-augmented penetration testing platform built for a senior VAPT engineer with 4+ years of experience in BFSI (Banking, Financial Services, Insurance) security. You operate as an expert security analyst and penetration tester.
+SYSTEM_PROMPT = """You are HAKUZA, an AI-augmented penetration testing platform built for a senior VAPT engineer with 4+ years of experience in BFSI (Banking, Financial Services, Insurance) security. You operate as an expert security analyst and penetration tester.
 
 EXPERTISE:
 - Web Application Security (OWASP Top 10, OWASP API Top 10 2023, WSTG v4.2)
@@ -167,6 +168,7 @@ CREATE TABLE IF NOT EXISTS findings (
     refs            TEXT,
     status          TEXT DEFAULT 'open',
     tool            TEXT,
+    notes           TEXT,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
@@ -195,8 +197,8 @@ _db_conn: Optional[sqlite3.Connection] = None
 
 
 def init_db() -> sqlite3.Connection:
-    """Initialise the NEXUS SQLite database, create tables if needed, return connection."""
-    NEXUS_DIR.mkdir(parents=True, exist_ok=True)
+    """Initialise the HAKUZA SQLite database, create tables if needed, return connection."""
+    HAKUZA_DIR.mkdir(parents=True, exist_ok=True)
     ENGAGEMENTS_DIR.mkdir(parents=True, exist_ok=True)
 
     conn = sqlite3.connect(str(DB_PATH))
@@ -204,6 +206,13 @@ def init_db() -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(_DB_SCHEMA)
+    # `CREATE TABLE IF NOT EXISTS` above doesn't add columns to a table that
+    # already exists — the 'notes' column was added after the initial schema,
+    # so migrate it in for any DB created before this change.
+    try:
+        conn.execute("ALTER TABLE findings ADD COLUMN notes TEXT")
+    except sqlite3.OperationalError:
+        pass  # column already exists
     conn.commit()
     return conn
 
@@ -462,8 +471,8 @@ _DEFAULT_CONFIG = {
 
 
 def load_config() -> dict:
-    """Load config from ~/.nexus/config.json, creating defaults if absent."""
-    NEXUS_DIR.mkdir(parents=True, exist_ok=True)
+    """Load config from ~/.hakuza/config.json, creating defaults if absent."""
+    HAKUZA_DIR.mkdir(parents=True, exist_ok=True)
     if not CONFIG_PATH.exists():
         save_config(_DEFAULT_CONFIG)
         return dict(_DEFAULT_CONFIG)
@@ -485,8 +494,8 @@ def load_config() -> dict:
 
 
 def save_config(cfg: dict) -> None:
-    """Persist config dict to ~/.nexus/config.json."""
-    NEXUS_DIR.mkdir(parents=True, exist_ok=True)
+    """Persist config dict to ~/.hakuza/config.json."""
+    HAKUZA_DIR.mkdir(parents=True, exist_ok=True)
     with open(CONFIG_PATH, "w") as fh:
         json.dump(cfg, fh, indent=2)
 
@@ -514,7 +523,7 @@ def get_client() -> anthropic.Anthropic:
     """
     Return an Anthropic client.
     Key resolution order:
-      1. 'api_key' field in ~/.nexus/config.json (non-empty)
+      1. 'api_key' field in ~/.hakuza/config.json (non-empty)
       2. ANTHROPIC_API_KEY environment variable
       3. Interactive prompt (saved to config for future calls)
     """
@@ -1243,7 +1252,7 @@ def print_engagement_header(eng: dict, console: Console) -> None:
 
 
 def print_banner(console: Console) -> None:
-    """Print the NEXUS ASCII banner."""
+    """Print the HAKUZA ASCII banner."""
     console.print(Text(BANNER, style="bold cyan"), end="")
     console.print(Text(BANNER_SUBTITLE, style="dim cyan"))
     console.print(Rule(style="dim cyan"))
@@ -1255,13 +1264,13 @@ def print_banner(console: Console) -> None:
 
 def cmd_init(args, console: Console) -> None:
     """
-    nexus init <name> --client <name> --target <url> [--type web|api|...] [--scope ...]
+    hakuza init <name> --client <name> --target <url> [--type web|api|...] [--scope ...]
     Creates a new engagement, scaffolds directories, sets as current.
     """
     name = getattr(args, "name", None)
     if not name:
         console.print("[red]Error: engagement name is required.[/red]")
-        console.print("Usage: nexus init <name> --client <client> --target <target>")
+        console.print("Usage: hakuza init <name> --client <client> --target <target>")
         return
 
     # Validate slug
@@ -1306,7 +1315,7 @@ def cmd_init(args, console: Console) -> None:
 
     # Write a .env with engagement metadata
     env_content = (
-        f"# NEXUS Engagement Environment\n"
+        f"# HAKUZA Engagement Environment\n"
         f"ENGAGEMENT={name}\n"
         f"CLIENT={client}\n"
         f"TARGET={target}\n"
@@ -1328,7 +1337,7 @@ def cmd_init(args, console: Console) -> None:
             f"[bold]Target:[/bold]  {target}\n"
             f"[bold]Type:[/bold]    {type_}\n"
             f"[bold]Dir:[/bold]     {eng_dir}\n\n"
-            f"[dim]Run [bold]nexus status[/bold] to see your engagement dashboard.[/dim]",
+            f"[dim]Run [bold]hakuza status[/bold] to see your engagement dashboard.[/dim]",
             title="[bold cyan]  New Engagement[/bold cyan]",
             border_style="green",
             expand=False,
@@ -1338,7 +1347,7 @@ def cmd_init(args, console: Console) -> None:
 
 def cmd_status(args, console: Console) -> None:
     """
-    nexus status — display current engagement dashboard.
+    hakuza status — display current engagement dashboard.
     Shows metadata, findings counts, recent findings, recon summary, AI next-steps.
     """
     eng = get_current_engagement()
@@ -1346,8 +1355,8 @@ def cmd_status(args, console: Console) -> None:
         console.print(
             Panel(
                 "[yellow]No active engagement.[/yellow]\n\n"
-                "Start with:  [bold]nexus init <name> --client <client> --target <target>[/bold]",
-                title="NEXUS Status",
+                "Start with:  [bold]hakuza init <name> --client <client> --target <target>[/bold]",
+                title="HAKUZA Status",
                 border_style="yellow",
                 expand=False,
             )
@@ -1411,10 +1420,10 @@ def cmd_status(args, console: Console) -> None:
 
 
 def cmd_list(args, console: Console) -> None:
-    """nexus list — list all engagements in a Rich table."""
+    """hakuza list — list all engagements in a Rich table."""
     engagements = list_engagements()
     if not engagements:
-        console.print("[yellow]No engagements found. Create one with:[/yellow] nexus init <name>")
+        console.print("[yellow]No engagements found. Create one with:[/yellow] hakuza init <name>")
         return
 
     current_name = get_config_value("current_engagement", "")
@@ -1458,7 +1467,7 @@ def cmd_list(args, console: Console) -> None:
 
 
 def cmd_switch(args, console: Console) -> None:
-    """nexus switch <name> — change the active engagement."""
+    """hakuza switch <name> — change the active engagement."""
     name = getattr(args, "name", None)
     if not name:
         # Interactive: show list and let user pick
@@ -1483,7 +1492,7 @@ def cmd_switch(args, console: Console) -> None:
     eng = get_engagement(name)
     if not eng:
         console.print(f"[red]Engagement '{name}' not found.[/red]")
-        console.print("Run [bold]nexus list[/bold] to see available engagements.")
+        console.print("Run [bold]hakuza list[/bold] to see available engagements.")
         return
 
     set_current_engagement(name)
@@ -1583,7 +1592,7 @@ def _extract_domain(target: str) -> str:
 
 def cmd_recon(args, console: Console) -> None:
     """
-    nexus recon [--target <override>] [--passive] [--deep]
+    hakuza recon [--target <override>] [--passive] [--deep]
 
     Runs:
       1. subfinder (subdomain enumeration)
@@ -1594,7 +1603,7 @@ def cmd_recon(args, console: Console) -> None:
     """
     eng = get_current_engagement()
     if not eng:
-        console.print("[red]No active engagement. Run 'nexus init' first.[/red]")
+        console.print("[red]No active engagement. Run 'hakuza init' first.[/red]")
         return
 
     target_override = getattr(args, "target", None)
@@ -1615,7 +1624,7 @@ def cmd_recon(args, console: Console) -> None:
             f"[bold]Target:[/bold] {primary_target}  |  [bold]Domain:[/bold] {domain}\n"
             f"[bold]Mode:[/bold]   {'Passive only' if passive_only else 'Active'}"
             f"{'  +  Deep scan' if deep_scan else ''}",
-            title="[bold cyan]  NEXUS Recon[/bold cyan]",
+            title="[bold cyan]  HAKUZA Recon[/bold cyan]",
             border_style="cyan",
             expand=False,
         )
@@ -1738,7 +1747,7 @@ def cmd_recon(args, console: Console) -> None:
     # Save summary to recon dir
     summary_file = recon_dir / f"{domain}_recon_summary_{timestamp}.txt"
     summary_file.write_text(recon_summary)
-    add_artifact(eng["id"], "notes", summary_file.name, str(summary_file), "nexus")
+    add_artifact(eng["id"], "notes", summary_file.name, str(summary_file), "hakuza")
     add_recon_data(eng["id"], "urls", primary_target, "manual")
 
     # --- AI analysis ---
@@ -1771,7 +1780,7 @@ def cmd_recon(args, console: Console) -> None:
             f"Live hosts: {len(live_hosts)}  |  "
             f"Open ports: {len([p for p in nmap_results if p.get('port')])}\n\n"
             f"[dim]Output saved to: {recon_dir}[/dim]\n"
-            f"[dim]Run [bold]nexus scan[/bold] to start vulnerability scanning.[/dim]",
+            f"[dim]Run [bold]hakuza scan[/bold] to start vulnerability scanning.[/dim]",
             title="[bold]Recon Summary[/bold]",
             border_style="green",
             expand=False,
@@ -1848,13 +1857,13 @@ def _run_nuclei(
 
 def cmd_scan(args, console: Console) -> None:
     """
-    nexus scan [--target <override>] [--profile quick|full|api] [--nuclei-tags tags]
+    hakuza scan [--target <override>] [--profile quick|full|api] [--nuclei-tags tags]
 
     Runs nuclei with the chosen profile, imports findings, AI analysis.
     """
     eng = get_current_engagement()
     if not eng:
-        console.print("[red]No active engagement. Run 'nexus init' first.[/red]")
+        console.print("[red]No active engagement. Run 'hakuza init' first.[/red]")
         return
 
     target_override = getattr(args, "target", None)
@@ -1876,7 +1885,7 @@ def cmd_scan(args, console: Console) -> None:
             f"[bold]Profile:[/bold] {profile}\n"
             f"[bold]Tags:[/bold]    {_NUCLEI_PROFILE_TAGS.get(profile,'')}"
             f"{' +'+extra_tags if extra_tags else ''}",
-            title="[bold cyan]  NEXUS Scan[/bold cyan]",
+            title="[bold cyan]  HAKUZA Scan[/bold cyan]",
             border_style="cyan",
             expand=False,
         )
@@ -1986,7 +1995,7 @@ def cmd_scan(args, console: Console) -> None:
             f"Profile: {profile}  |  "
             f"New findings: {len(imported_findings)}  |  "
             f"Total in engagement: {sum(all_counts.values())}\n\n"
-            f"[dim]Run [bold]nexus findings[/bold] to review all findings.[/dim]",
+            f"[dim]Run [bold]hakuza findings[/bold] to review all findings.[/dim]",
             title="[bold]Scan Summary[/bold]",
             border_style="green",
             expand=False,
@@ -1996,7 +2005,7 @@ def cmd_scan(args, console: Console) -> None:
 
 def cmd_autopilot(args, console: Console) -> None:
     """
-    nexus autopilot [--target <override>] [--profile quick|full] [--skip-ai] [--skip-scan]
+    hakuza autopilot [--target <override>] [--profile quick|full] [--skip-ai] [--skip-scan]
 
     Unattended end-to-end pipeline for a fresh engagement:
       1. recon     — subfinder, httpx, nmap
@@ -2034,7 +2043,7 @@ def cmd_autopilot(args, console: Console) -> None:
                     Panel(
                         f"[bold red]Target override '{_rich_escape(target_override)}' is not in this "
                         f"engagement's defined scope.[/bold red]\n"
-                        f"Run [cyan]nexus scope --list[/cyan] to review, or omit --target to use "
+                        f"Run [cyan]hakuza scope --list[/cyan] to review, or omit --target to use "
                         f"the engagement's default target.",
                         title="Scope Guard",
                         border_style="red",
@@ -2055,7 +2064,7 @@ def cmd_autopilot(args, console: Console) -> None:
             f"[bold]Target:[/bold]     {primary_target}\n"
             f"[bold]Profile:[/bold]    {profile}\n"
             f"[bold]AI triage:[/bold]  {'enabled' if have_ai else ('disabled (--skip-ai)' if skip_ai else 'unavailable — set ANTHROPIC_API_KEY')}",
-            title="[bold cyan]  NEXUS Autopilot[/bold cyan]",
+            title="[bold cyan]  HAKUZA Autopilot[/bold cyan]",
             border_style="cyan",
             expand=False,
         )
@@ -2142,19 +2151,19 @@ def cmd_autopilot(args, console: Console) -> None:
 
 def cmd_import(args, console: Console) -> None:
     """
-    nexus import <file> [--source nessus|nuclei|burp|nmap]
+    hakuza import <file> [--source nessus|nuclei|burp|nmap]
 
     Auto-detects file format, parses, imports all findings to DB.
     Prints import summary.
     """
     eng = get_current_engagement()
     if not eng:
-        console.print("[red]No active engagement. Run 'nexus init' first.[/red]")
+        console.print("[red]No active engagement. Run 'hakuza init' first.[/red]")
         return
 
     filepath = getattr(args, "file", None)
     if not filepath:
-        console.print("[red]Usage: nexus import <file> [--source nessus|nuclei|burp|nmap][/red]")
+        console.print("[red]Usage: hakuza import <file> [--source nessus|nuclei|burp|nmap][/red]")
         return
 
     source_hint = getattr(args, "source", None)
@@ -2278,7 +2287,7 @@ def cmd_import(args, console: Console) -> None:
             console.print(f"[dim]AI triage unavailable: {_rich_escape(str(exc))}[/dim]")
 
 
-# END OF PART 1 — see nexus_part2.py for analysis, reporting, and main()
+# END OF PART 1 — see hakuza_part2.py for analysis, reporting, and main()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2321,7 +2330,7 @@ from rich.text import Text
 # ---------------------------------------------------------------------------
 
 def cmd_analyze(args, console):
-    """nexus analyze [--input file] [--save]"""
+    """hakuza analyze [--input file] [--save]"""
     eng = _require_engagement(console)
     client = get_client()
 
@@ -2335,7 +2344,7 @@ def cmd_analyze(args, console):
     else:
         findings = list_findings(eng["id"])
         if not findings:
-            console.print("[yellow]No findings in current engagement. Add some with [cyan]nexus add[/cyan].[/yellow]")
+            console.print("[yellow]No findings in current engagement. Add some with [cyan]hakuza add[/cyan].[/yellow]")
             return
         findings_text = findings_to_summary_text(findings)
 
@@ -2398,13 +2407,13 @@ Be specific. Use exact finding titles from the data. Do not pad with generic adv
         eng_dir = ENGAGEMENTS_DIR / eng["name"]
         eng_dir.mkdir(parents=True, exist_ok=True)
         out_path = eng_dir / f"analysis_{ts}.md"
-        header = f"# NEXUS Analysis — {eng['name']}\n**Date:** {datetime.now().strftime('%Y-%m-%d %H:%M')}\n**Target:** {eng.get('target_url','N/A')}\n\n---\n\n"
+        header = f"# HAKUZA Analysis — {eng['name']}\n**Date:** {datetime.now().strftime('%Y-%m-%d %H:%M')}\n**Target:** {eng.get('target_url','N/A')}\n\n---\n\n"
         out_path.write_text(header + (full_response or ""), encoding="utf-8")
         console.print(f"\n[green]Analysis saved:[/green] {out_path}")
 
 
 def cmd_advise(args, console):
-    """nexus advise [--context text]"""
+    """hakuza advise [--context text]"""
     eng = _require_engagement(console)
     client = get_client()
 
@@ -2459,7 +2468,7 @@ Be specific to THIS target. Avoid generic advice."""
 
 
 def cmd_chain(args, console):
-    """nexus chain [--input file] [--save]"""
+    """hakuza chain [--input file] [--save]"""
     eng = _require_engagement(console)
     client = get_client()
 
@@ -2472,7 +2481,7 @@ def cmd_chain(args, console):
     else:
         findings = list_findings(eng["id"])
         if not findings:
-            console.print("[yellow]No findings to chain. Add findings with [cyan]nexus add[/cyan].[/yellow]")
+            console.print("[yellow]No findings to chain. Add findings with [cyan]hakuza add[/cyan].[/yellow]")
             return
         findings_text = findings_to_summary_text(findings)
 
@@ -2528,9 +2537,9 @@ Generate at minimum 3 chains, up to 6 if the findings support it. Be creative bu
 
 
 def cmd_explain(args, console):
-    """nexus explain <topic> [--audience technical|executive]"""
+    """hakuza explain <topic> [--audience technical|executive]"""
     if not hasattr(args, "topic") or not args.topic:
-        console.print("[red]Usage:[/red] nexus explain <topic> [--audience technical|executive]")
+        console.print("[red]Usage:[/red] hakuza explain <topic> [--audience technical|executive]")
         sys.exit(1)
 
     topic = " ".join(args.topic) if isinstance(args.topic, list) else args.topic
@@ -2603,7 +2612,7 @@ Best tools for finding and exploiting this vulnerability with key flags/options.
 # ---------------------------------------------------------------------------
 
 def cmd_web(args, console):
-    """nexus web [--url <override>] [--checklist] [--owasp-category <cat>]"""
+    """hakuza web [--url <override>] [--checklist] [--owasp-category <cat>]"""
     eng = _require_engagement(console)
     client = get_client()
 
@@ -2666,7 +2675,7 @@ Be specific. Use the actual URL in all commands."""
 
 
 def cmd_api(args, console):
-    """nexus api [--url <override>] [--spec <openapi.json>] [--graphql]"""
+    """hakuza api [--url <override>] [--spec <openapi.json>] [--graphql]"""
     eng = _require_engagement(console)
     client = get_client()
 
@@ -2756,14 +2765,14 @@ Use actual URL {url} in all example requests."""
 
 
 def cmd_ai_audit(args, console):
-    """nexus ai-audit [--url <target_url>] [--mock] [--save <file>]"""
+    """hakuza ai-audit [--url <target_url>] [--mock] [--save <file>]"""
     mock_mode = getattr(args, "mock", False)
     target_url = getattr(args, "url", None) or "http://target-ai-system/api/chat"
     save_file = getattr(args, "save", None)
 
     client = get_client() if not mock_mode else None
 
-    console.print(Rule("[bold cyan]NEXUS AI / LLM Security Audit[/bold cyan]"))
+    console.print(Rule("[bold cyan]HAKUZA AI / LLM Security Audit[/bold cyan]"))
     console.print(f"[dim]Target:[/dim] {target_url}")
     console.print(f"[dim]Mode:[/dim] {'[yellow]MOCK (no live requests)[/yellow]' if mock_mode else '[green]LIVE[/green]'}")
     console.print()
@@ -3030,7 +3039,7 @@ Return ONLY valid JSON with no markdown fences:
 
 
 def cmd_threat(args, console):
-    """nexus threat [--stack <tech_stack>] [--sector bfsi|healthcare|govt|retail|tech]"""
+    """hakuza threat [--stack <tech_stack>] [--sector bfsi|healthcare|govt|retail|tech]"""
     eng = _require_engagement(console)
     client = get_client()
 
@@ -3097,9 +3106,9 @@ Be specific. Reference real threat groups by name."""
 # ---------------------------------------------------------------------------
 
 def cmd_kb(args, console):
-    """nexus kb <topic> [--depth quick|full]"""
+    """hakuza kb <topic> [--depth quick|full]"""
     if not hasattr(args, "topic") or not args.topic:
-        console.print("[red]Usage:[/red] nexus kb <topic> [--depth quick|full]")
+        console.print("[red]Usage:[/red] hakuza kb <topic> [--depth quick|full]")
         sys.exit(1)
 
     topic = " ".join(args.topic) if isinstance(args.topic, list) else str(args.topic)
@@ -3175,9 +3184,9 @@ Best-in-class tools with key flags, ordered by preference.
 
 
 def cmd_payload(args, console):
-    """nexus payload <type> [--context <tech>] [--bypass waf|filter] [--format url|json|xml|header]"""
+    """hakuza payload <type> [--context <tech>] [--bypass waf|filter] [--format url|json|xml|header]"""
     if not hasattr(args, "type") or not args.type:
-        console.print("[red]Usage:[/red] nexus payload <type> [--context <tech>] [--bypass waf|filter] [--format url|json|xml|header]")
+        console.print("[red]Usage:[/red] hakuza payload <type> [--context <tech>] [--bypass waf|filter] [--format url|json|xml|header]")
         sys.exit(1)
 
     payload_type = args.type
@@ -3358,9 +3367,9 @@ def _decode_vector_offline(vector: str, console: Console) -> None:
 
 
 def cmd_cvss(args, console):
-    """nexus cvss <vector_or_describe>"""
+    """hakuza cvss <vector_or_describe>"""
     if not hasattr(args, "input") or not args.input:
-        console.print("[red]Usage:[/red] nexus cvss <CVSS_vector_or_natural_language_description>")
+        console.print("[red]Usage:[/red] hakuza cvss <CVSS_vector_or_natural_language_description>")
         sys.exit(1)
 
     raw_input = " ".join(args.input) if isinstance(args.input, list) else str(args.input)
@@ -3439,7 +3448,7 @@ Return ONLY valid JSON (no markdown fences):
 
 
 def cmd_add(args, console):
-    """nexus add [--quick] [--from-file <file>]"""
+    """hakuza add [--quick] [--from-file <file>]"""
     eng = _require_engagement(console)
 
     console.print(Rule("[bold cyan]Add Finding[/bold cyan]"))
@@ -3549,7 +3558,7 @@ def cmd_add(args, console):
 
 
 def cmd_findings(args, console):
-    """nexus findings [--severity ...] [--status ...] [--export json|csv|md] [--full]"""
+    """hakuza findings [--severity ...] [--status ...] [--export json|csv|md] [--full]"""
     eng = _require_engagement(console)
 
     sev_filter = getattr(args, "severity", None)
@@ -3596,17 +3605,17 @@ def cmd_findings(args, console):
         eng_dir = ENGAGEMENTS_DIR / eng["name"]
         eng_dir.mkdir(parents=True, exist_ok=True)
         if export_fmt == "json":
-            out_path = eng_dir / f"nexus_findings_{eng['name']}_{ts}.json"
+            out_path = eng_dir / f"hakuza_findings_{eng['name']}_{ts}.json"
             out_path.write_text(json.dumps(findings, indent=2, default=str), encoding="utf-8")
         elif export_fmt == "csv":
-            out_path = eng_dir / f"nexus_findings_{eng['name']}_{ts}.csv"
+            out_path = eng_dir / f"hakuza_findings_{eng['name']}_{ts}.csv"
             if findings:
                 with open(out_path, "w", newline="", encoding="utf-8") as fh:
                     writer = csv.DictWriter(fh, fieldnames=findings[0].keys())
                     writer.writeheader()
                     writer.writerows(findings)
         elif export_fmt == "md":
-            out_path = eng_dir / f"nexus_findings_{eng['name']}_{ts}.md"
+            out_path = eng_dir / f"hakuza_findings_{eng['name']}_{ts}.md"
             md_lines = [f"# Findings — {eng['name']}\n\n"]
             for f in findings:
                 md_lines.append(f"## {f.get('title','Untitled')} ({f.get('severity','N/A')})\n")
@@ -3622,11 +3631,11 @@ def cmd_findings(args, console):
 
 
 def cmd_update_finding(args, console):
-    """nexus update <short_id> [--status ...] [--severity ...] [--note ...]"""
+    """hakuza update <short_id> [--status ...] [--severity ...] [--note ...]"""
     eng = _require_engagement(console)
 
     if not hasattr(args, "short_id") or not args.short_id:
-        console.print("[red]Usage:[/red] nexus update <finding_id> [--status open|confirmed|remediated|accepted|fp] [--severity <sev>] [--note <text>]")
+        console.print("[red]Usage:[/red] hakuza update <finding_id> [--status open|confirmed|remediated|accepted|fp] [--severity <sev>] [--note <text>]")
         sys.exit(1)
 
     short_id = args.short_id
@@ -3675,343 +3684,11 @@ def cmd_update_finding(args, console):
 
 
 # ---------------------------------------------------------------------------
-# 5. REPORTING
-# ---------------------------------------------------------------------------
-
-def generate_html_report(markdown_content: str, eng: dict, counts: dict, score: int) -> str:
-    """Convert report markdown to complete standalone HTML with dark theme."""
-    now_str = datetime.now().strftime("%Y-%m-%d")
-    client_name = eng.get("client_name", "Confidential Client")
-    tester = get_config_value("tester") or "Security Assessor"
-    target = eng.get("target_url", "N/A")
-
-    total = counts.get("total", 0)
-    critical = counts.get("critical", 0)
-    high = counts.get("high", 0)
-    medium = counts.get("medium", 0)
-    low = counts.get("low", 0)
-
-    # Map markdown to basic HTML
-    html_body = markdown_content
-    html_body = re.sub(r"^# (.+)$", r"<h1>\1</h1>", html_body, flags=re.MULTILINE)
-    html_body = re.sub(r"^## (.+)$", r"<h2>\1</h2>", html_body, flags=re.MULTILINE)
-    html_body = re.sub(r"^### (.+)$", r"<h3>\1</h3>", html_body, flags=re.MULTILINE)
-    html_body = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", html_body)
-    html_body = re.sub(r"\*(.+?)\*", r"<em>\1</em>", html_body)
-    html_body = re.sub(r"`(.+?)`", r"<code>\1</code>", html_body)
-    html_body = re.sub(r"```[\w]*\n(.*?)\n```", r"<pre><code>\1</code></pre>", html_body, flags=re.DOTALL)
-    html_body = re.sub(r"^\s*[-*] (.+)$", r"<li>\1</li>", html_body, flags=re.MULTILINE)
-    html_body = re.sub(r"(<li>.*?</li>\n)+", lambda m: "<ul>" + m.group(0) + "</ul>", html_body, flags=re.DOTALL)
-    html_body = html_body.replace("\n\n", "</p><p>")
-
-    gauge_pct = min(score, 100)
-    gauge_color = "#e53e3e" if score >= 70 else "#ed8936" if score >= 40 else "#ecc94b" if score >= 20 else "#48bb78"
-
-    return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Pentest Report — {eng['name']}</title>
-<style>
-  :root {{
-    --bg: #0d1117;
-    --surface: #161b22;
-    --border: #30363d;
-    --text: #c9d1d9;
-    --muted: #8b949e;
-    --accent: #58a6ff;
-    --critical: #f85149;
-    --high: #d29922;
-    --medium: #3fb950;
-    --low: #58a6ff;
-    --info: #8b949e;
-  }}
-  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-  body {{ background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; line-height: 1.7; }}
-  .confidential-banner {{
-    background: var(--critical); color: white; text-align: center;
-    padding: 10px; font-weight: bold; letter-spacing: 3px; font-size: 13px;
-    position: sticky; top: 0; z-index: 100;
-  }}
-  .container {{ max-width: 1100px; margin: 0 auto; padding: 40px 24px; }}
-  .report-header {{ border-bottom: 1px solid var(--border); padding-bottom: 32px; margin-bottom: 40px; }}
-  .report-header h1 {{ font-size: 2rem; color: var(--accent); margin-bottom: 8px; }}
-  .meta-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-top: 24px; }}
-  .meta-item {{ background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }}
-  .meta-item .label {{ font-size: 11px; text-transform: uppercase; color: var(--muted); letter-spacing: 1px; }}
-  .meta-item .value {{ font-size: 16px; font-weight: 600; margin-top: 4px; }}
-  .stats-row {{ display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin: 32px 0; }}
-  .stat-card {{ background: var(--surface); border-radius: 8px; padding: 20px; text-align: center; border-top: 3px solid var(--border); }}
-  .stat-card.critical {{ border-top-color: var(--critical); }}
-  .stat-card.high {{ border-top-color: var(--high); }}
-  .stat-card.medium {{ border-top-color: var(--medium); }}
-  .stat-card.low {{ border-top-color: var(--low); }}
-  .stat-card .number {{ font-size: 2.5rem; font-weight: bold; line-height: 1; }}
-  .stat-card .label {{ font-size: 12px; color: var(--muted); margin-top: 6px; }}
-  .stat-card.critical .number {{ color: var(--critical); }}
-  .stat-card.high .number {{ color: var(--high); }}
-  .stat-card.medium .number {{ color: var(--medium); }}
-  .stat-card.low .number {{ color: var(--low); }}
-  .gauge-section {{ display: flex; align-items: center; gap: 32px; background: var(--surface);
-    border: 1px solid var(--border); border-radius: 12px; padding: 24px; margin: 32px 0; }}
-  .gauge {{ position: relative; width: 120px; height: 60px; overflow: hidden; flex-shrink: 0; }}
-  .gauge-bg {{ width: 120px; height: 120px; border-radius: 50%; border: 12px solid var(--border);
-    clip-path: polygon(0 50%, 100% 50%, 100% 100%, 0 100%); }}
-  .gauge-fill {{ position: absolute; top: 0; left: 0; width: 120px; height: 120px;
-    border-radius: 50%; border: 12px solid {gauge_color};
-    clip-path: polygon(0 50%, 100% 50%, 100% 100%, 0 100%);
-    transform: rotate({int(gauge_pct * 1.8 - 90)}deg); transform-origin: 50% 100%; }}
-  .gauge-score {{ position: absolute; bottom: 0; left: 50%; transform: translateX(-50%);
-    font-size: 22px; font-weight: bold; color: {gauge_color}; }}
-  .gauge-label {{ flex: 1; }}
-  .gauge-label h3 {{ font-size: 1.2rem; color: var(--text); margin-bottom: 4px; }}
-  .gauge-label p {{ color: var(--muted); font-size: 14px; }}
-  h1, h2, h3 {{ color: var(--accent); margin: 28px 0 12px; }}
-  h2 {{ font-size: 1.4rem; border-bottom: 1px solid var(--border); padding-bottom: 8px; }}
-  h3 {{ font-size: 1.1rem; color: var(--text); }}
-  p {{ margin: 10px 0; color: var(--text); }}
-  ul, ol {{ margin: 10px 0 10px 24px; }}
-  li {{ margin: 4px 0; }}
-  code {{ background: var(--surface); padding: 2px 6px; border-radius: 4px; font-size: 0.9em; color: #d2a8ff; font-family: monospace; }}
-  pre {{ background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px;
-    overflow-x: auto; margin: 16px 0; }}
-  pre code {{ background: none; padding: 0; color: var(--text); }}
-  strong {{ color: #f0f6fc; }}
-  table {{ width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 14px; }}
-  th {{ background: var(--surface); color: var(--muted); text-transform: uppercase; font-size: 11px;
-    letter-spacing: 1px; padding: 10px 12px; text-align: left; border-bottom: 2px solid var(--border); }}
-  td {{ padding: 10px 12px; border-bottom: 1px solid var(--border); }}
-  tr:hover td {{ background: var(--surface); }}
-  .footer {{ margin-top: 60px; padding-top: 24px; border-top: 1px solid var(--border);
-    text-align: center; color: var(--muted); font-size: 13px; }}
-  @media print {{
-    .confidential-banner {{ position: fixed; }}
-    body {{ background: white; color: black; }}
-    :root {{ --bg: white; --surface: #f5f5f5; --text: #111; --muted: #555; --border: #ddd; }}
-    code, pre {{ background: #f0f0f0; }}
-  }}
-</style>
-</head>
-<body>
-<div class="confidential-banner">CONFIDENTIAL — RESTRICTED DISTRIBUTION</div>
-<div class="container">
-  <div class="report-header">
-    <h1>Penetration Test Report</h1>
-    <p style="color: var(--muted); font-size: 1rem;">{eng['name']}</p>
-    <div class="meta-grid">
-      <div class="meta-item"><div class="label">Client</div><div class="value">{client_name}</div></div>
-      <div class="meta-item"><div class="label">Target</div><div class="value" style="font-size:13px; word-break:break-all;">{target}</div></div>
-      <div class="meta-item"><div class="label">Assessor</div><div class="value">{tester}</div></div>
-      <div class="meta-item"><div class="label">Report Date</div><div class="value">{now_str}</div></div>
-      <div class="meta-item"><div class="label">Classification</div><div class="value" style="color:var(--critical);">CONFIDENTIAL</div></div>
-    </div>
-  </div>
-  <div class="stats-row">
-    <div class="stat-card critical"><div class="number">{critical}</div><div class="label">Critical</div></div>
-    <div class="stat-card high"><div class="number">{high}</div><div class="label">High</div></div>
-    <div class="stat-card medium"><div class="number">{medium}</div><div class="label">Medium</div></div>
-    <div class="stat-card low"><div class="number">{low}</div><div class="label">Low</div></div>
-    <div class="stat-card"><div class="number">{total}</div><div class="label">Total</div></div>
-  </div>
-  <div class="gauge-section">
-    <div class="gauge">
-      <div class="gauge-bg"></div>
-      <div class="gauge-fill"></div>
-      <div class="gauge-score">{score}</div>
-    </div>
-    <div class="gauge-label">
-      <h3>Overall Risk Score</h3>
-      <p>Weighted aggregate of all findings. Score of {score}/100 indicates
-      {'critical' if score >= 70 else 'high' if score >= 40 else 'medium' if score >= 20 else 'low'} overall risk posture.</p>
-    </div>
-  </div>
-  <div class="report-body">
-    <p>{html_body}</p>
-  </div>
-  <div class="footer">
-    <p>Generated by NEXUS v{VERSION} &bull; {now_str} &bull; Powered by Claude AI</p>
-    <p>This report contains confidential information. Do not distribute without authorisation.</p>
-  </div>
-</div>
-</body>
-</html>"""
-
-
-def cmd_report(args, console):
-    """nexus report [--html] [--output <file>] [--client <override>]"""
-    eng = _require_engagement(console)
-    client = get_client()
-
-    findings = list_findings(eng["id"])
-    counts = get_finding_count(eng["id"])
-    findings_text = findings_to_summary_text(findings) if findings else "No findings recorded."
-    recon_data = add_recon_data  # function reference; fetch actual data below
-
-    # Fetch recon data from DB
-    db = get_db()
-    try:
-        rows = db.execute(
-            "SELECT data_type, content FROM recon_data WHERE engagement_id = ?", [eng["id"]]
-        ).fetchall()
-        recon_text = "\n".join(f"[{r['data_type']}] {str(r['content'])[:300]}" for r in rows) if rows else "No recon data."
-    finally:
-        db.close()
-
-    client_override = getattr(args, "client", None)
-    client_name = client_override or eng.get("client_name", "Confidential Client")
-    tester = get_config_value("tester") or "Security Assessor"
-    now_str = datetime.now().strftime("%Y-%m-%d")
-    gen_html = getattr(args, "html", False)
-    output_file = getattr(args, "output", None)
-
-    # Calculate a simple risk score (0–100)
-    risk_score = min(100, (
-        counts.get("critical", 0) * 25 +
-        counts.get("high", 0) * 15 +
-        counts.get("medium", 0) * 5 +
-        counts.get("low", 0) * 2
-    ))
-
-    print_engagement_header(eng, console)
-    console.print(Rule("[bold cyan]Generating Professional Pentest Report[/bold cyan]"))
-
-    prompt = f"""Write a complete, professional penetration testing report for the following engagement.
-
-ENGAGEMENT DETAILS:
-- Name: {eng['name']}
-- Client: {client_name}
-- Target: {eng.get('target_url','N/A')}
-- Type: {eng.get('type','web')}
-- Tester: {tester}
-- Date: {now_str}
-- Scope: {eng.get('scope_notes','Full scope as agreed')}
-
-FINDINGS ({counts.get('total',0)} total):
-Critical: {counts.get('critical',0)} | High: {counts.get('high',0)} | Medium: {counts.get('medium',0)} | Low: {counts.get('low',0)}
-
-DETAILED FINDINGS DATA:
-{findings_text}
-
-RECON DATA:
-{recon_text}
-
-RISK SCORE: {risk_score}/100
-
-Write the COMPLETE report with these sections. Do not truncate or use placeholders.
-
-# Penetration Test Report
-## {eng['name']}
-### {client_name} | {now_str} | CONFIDENTIAL
-
----
-
-## Table of Contents
-List all sections with page references.
-
-## 1. Executive Summary
-Write 3–4 paragraphs for a C-suite audience with NO technical background:
-- Overall security posture assessment
-- Most critical finding and its business impact
-- Key numbers (X critical, Y high, etc.)
-- Top 3 recommended actions
-- Risk rating: Critical/High/Medium/Low
-
-## 2. Scope and Methodology
-- Target systems in scope
-- Testing approach (black/grey/white box)
-- Tools and techniques employed
-- Testing dates and duration
-- Limitations and assumptions
-
-## 3. Attack Surface Summary
-Based on recon data, describe the discovered attack surface.
-
-## 4. Findings Summary Table
-| # | Title | Severity | CVSS | Component | Status |
-Include all {counts.get('total',0)} findings.
-
-## 5. Detailed Findings
-For EACH finding, write a full section:
-### Finding [N]: [Title]
-**Severity:** [badge]  **CVSS:** [score]  **CWE:** [cwe]
-**Affected Component:** [url/component]
-**Status:** [status]
-
-**Description**
-[Full technical description]
-
-**Evidence**
-```
-[evidence or N/A]
-```
-
-**Impact**
-[Business and technical impact]
-
-**Remediation**
-[Specific, actionable fix with example code where appropriate]
-
-**References**
-[OWASP, CVE, CWE links]
-
----
-
-## 6. Vulnerability Statistics
-Bar chart representation using ASCII and breakdown by severity, category, status.
-
-## 7. Attack Chains
-Describe the most dangerous multi-step exploitation path found.
-
-## 8. Remediation Timeline
-| Priority | Finding | Effort | Owner | Due Date |
-Group by: Immediate (0-7 days), Short-term (7-30 days), Long-term (30-90 days).
-
-## 9. Conclusion
-Summary statement and overall recommendation.
-
----
-*Report generated by NEXUS {VERSION} | {tester} | {now_str}*
-
-Write ALL sections in full. No placeholders. No "see above". This must be a complete deliverable."""
-
-    messages = [{"role": "user", "content": prompt}]
-    full_md = stream_to_console(client, messages, 8000, console)
-
-    # Determine output filename
-    safe_name = re.sub(r"[^\w-]", "_", eng["name"])
-    ts = datetime.now().strftime("%Y%m%d")
-    default_md = f"{safe_name}_report_{ts}.md"
-    out_md = Path(output_file) if output_file else Path(default_md)
-
-    out_md.write_text(full_md or "", encoding="utf-8")
-    console.print(f"\n[green]Report saved:[/green] {out_md}")
-
-    if gen_html:
-        html_content = generate_html_report(full_md or "", eng, counts, risk_score)
-        out_html = out_md.with_suffix(".html")
-        out_html.write_text(html_content, encoding="utf-8")
-        console.print(f"[green]HTML report saved:[/green] {out_html}")
-
-    console.print(Panel(
-        f"[bold]Findings:[/bold] {counts.get('total',0)} total | "
-        f"[red]{counts.get('critical',0)} Critical[/red] | "
-        f"[yellow]{counts.get('high',0)} High[/yellow] | "
-        f"[blue]{counts.get('medium',0)} Medium[/blue] | "
-        f"[green]{counts.get('low',0)} Low[/green]\n"
-        f"[bold]Risk Score:[/bold] {risk_score}/100\n"
-        f"[bold]Report:[/bold] {out_md}",
-        title="[green]Report Complete[/green]",
-        border_style="green",
-    ))
-
-
-# ---------------------------------------------------------------------------
 # 6. INTERACTIVE CHAT
 # ---------------------------------------------------------------------------
 
 def cmd_chat(args, console):
-    """nexus chat [--context minimal|full]"""
+    """hakuza chat [--context minimal|full]"""
     eng = _require_engagement(console)
     client = get_client()
 
@@ -4040,7 +3717,7 @@ def cmd_chat(args, console):
     system_with_context = SYSTEM_PROMPT + f"\n\n--- ENGAGEMENT CONTEXT ---\n{ctx_block}\n--- END CONTEXT ---"
 
     print_engagement_header(eng, console)
-    console.print(Rule("[bold cyan]NEXUS AI Chat[/bold cyan]"))
+    console.print(Rule("[bold cyan]HAKUZA AI Chat[/bold cyan]"))
     console.print("[dim]Commands: quit/exit/q • clear • save • findings • status[/dim]\n")
 
     conversation: list = []
@@ -4078,7 +3755,7 @@ def cmd_chat(args, console):
             eng_dir = ENGAGEMENTS_DIR / eng["name"]
             eng_dir.mkdir(parents=True, exist_ok=True)
             out_path = eng_dir / f"chat_{ts}.md"
-            lines = [f"# NEXUS Chat Transcript — {eng['name']}\n**Date:** {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"]
+            lines = [f"# HAKUZA Chat Transcript — {eng['name']}\n**Date:** {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"]
             for turn in transcript:
                 lines.append(f"**{turn['role'].capitalize()}:** {turn['content']}\n\n")
             out_path.write_text("".join(lines), encoding="utf-8")
@@ -4088,7 +3765,7 @@ def cmd_chat(args, console):
         conversation.append({"role": "user", "content": user_input})
         transcript.append({"role": "user", "content": user_input})
 
-        console.print("\n[bold magenta]NEXUS[/bold magenta]  ", end="")
+        console.print("\n[bold magenta]HAKUZA[/bold magenta]  ", end="")
 
         try:
             with client.messages.stream(
@@ -4116,13 +3793,13 @@ def cmd_chat(args, console):
 # ---------------------------------------------------------------------------
 
 def cmd_config(args, console):
-    """nexus config [--set key=value] [--show]"""
+    """hakuza config [--set key=value] [--show]"""
     show = getattr(args, "show", False)
     set_val = getattr(args, "set", None)
 
     if set_val:
         if "=" not in set_val:
-            console.print("[red]Usage:[/red] nexus config --set key=value")
+            console.print("[red]Usage:[/red] hakuza config --set key=value")
             sys.exit(1)
         key, _, val = set_val.partition("=")
         save_config(key.strip(), val.strip())
@@ -4131,7 +3808,7 @@ def cmd_config(args, console):
 
     # Show all config
     config = load_config()
-    tbl = Table(title="NEXUS Configuration", border_style="cyan")
+    tbl = Table(title="HAKUZA Configuration", border_style="cyan")
     tbl.add_column("Key", style="cyan")
     tbl.add_column("Value", style="white")
 
@@ -4147,12 +3824,12 @@ def cmd_config(args, console):
 
     console.print(tbl)
     console.print(f"\n[dim]Config file:[/dim] {CONFIG_PATH}")
-    console.print("[dim]Set values with:[/dim] nexus config --set key=value")
+    console.print("[dim]Set values with:[/dim] hakuza config --set key=value")
     console.print("[dim]Common keys:[/dim] tester, proxy, api_key, default_client")
 
 
 def cmd_tools(args, console):
-    """nexus tools — check which security tools are installed"""
+    """hakuza tools — check which security tools are installed"""
     tools_to_check = [
         ("nmap", "Network mapper and port scanner"),
         ("nuclei", "Fast vulnerability scanner (ProjectDiscovery)"),
@@ -4233,39 +3910,39 @@ def cmd_tools(args, console):
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="nexus",
-        description=f"NEXUS Unified Penetration Testing Platform v{VERSION}",
+        prog="hakuza",
+        description=f"HAKUZA Unified Penetration Testing Platform v{VERSION}",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent("""
         Examples:
-          nexus init web-test-2026 --client "Acme Bank" --target https://bank.acme.com --type web
-          nexus status
-          nexus recon
-          nexus scan --profile quick
-          nexus autopilot --profile full          # unattended recon->scan->triage->report
-          nexus import nessus_export.csv
-          nexus analyze --save
-          nexus advise
-          nexus chain --save
-          nexus explain "SQL Injection" --audience executive
-          nexus web --url https://bank.acme.com/api/login
-          nexus api --url https://api.acme.com --graphql
-          nexus ai-audit --mock
-          nexus ai-audit --url http://target-ai/api --save audit_results.json
-          nexus threat --sector bfsi --stack "Spring Boot, MySQL, Redis"
-          nexus kb "SSRF" --depth full
-          nexus payload xss --context react --bypass waf --format url
-          nexus cvss "unauthenticated RCE over network, no user interaction, full impact"
-          nexus add --quick
-          nexus findings --severity critical --export json
-          nexus update 42 --status confirmed --note "Reproduced on staging"
-          nexus report --html --output acme_pentest.md
-          nexus chat --context full
-          nexus config --set tester="Divith D Shetty"
-          nexus tools
+          hakuza init web-test-2026 --client "Acme Bank" --target https://bank.acme.com --type web
+          hakuza status
+          hakuza recon
+          hakuza scan --profile quick
+          hakuza autopilot --profile full          # unattended recon->scan->triage->report
+          hakuza import nessus_export.csv
+          hakuza analyze --save
+          hakuza advise
+          hakuza chain --save
+          hakuza explain "SQL Injection" --audience executive
+          hakuza web --url https://bank.acme.com/api/login
+          hakuza api --url https://api.acme.com --graphql
+          hakuza ai-audit --mock
+          hakuza ai-audit --url http://target-ai/api --save audit_results.json
+          hakuza threat --sector bfsi --stack "Spring Boot, MySQL, Redis"
+          hakuza kb "SSRF" --depth full
+          hakuza payload xss --context react --bypass waf --format url
+          hakuza cvss "unauthenticated RCE over network, no user interaction, full impact"
+          hakuza add --quick
+          hakuza findings --severity critical --export json
+          hakuza update 42 --status confirmed --note "Reproduced on staging"
+          hakuza report --html --output acme_pentest.md
+          hakuza chat --context full
+          hakuza config --set tester="Divith D Shetty"
+          hakuza tools
         """),
     )
-    parser.add_argument("--version", action="version", version=f"NEXUS {VERSION}")
+    parser.add_argument("--version", action="version", version=f"HAKUZA {VERSION}")
 
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
@@ -4461,26 +4138,13 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def print_banner(console):
-    banner = r"""
- ███╗   ██╗███████╗██╗  ██╗██╗   ██╗███████╗
- ████╗  ██║██╔════╝╚██╗██╔╝██║   ██║██╔════╝
- ██╔██╗ ██║█████╗   ╚███╔╝ ██║   ██║███████╗
- ██║╚██╗██║██╔══╝   ██╔██╗ ██║   ██║╚════██║
- ██║ ╚████║███████╗██╔╝ ██╗╚██████╔╝███████║
- ╚═╝  ╚═══╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝"""
-    console.print(f"[cyan]{banner}[/cyan]")
-    console.print(f"[dim] Unified Penetration Testing Platform v{VERSION}[/dim]")
-    console.print(f"[dim] Divith D Shetty  |  CEH · CRTP · CAISP  |  Powered by Claude[/dim]\n")
-
-
 def main():
     console = Console()
     parser = build_parser()
     args = parser.parse_args()
 
-    # Initialise ~/.nexus/ on first run
-    NEXUS_DIR.mkdir(exist_ok=True)
+    # Initialise ~/.hakuza/ on first run
+    HAKUZA_DIR.mkdir(exist_ok=True)
     ENGAGEMENTS_DIR.mkdir(exist_ok=True)
     init_db()
 
@@ -4562,14 +4226,14 @@ def main():
 # MODULE: mod_ad_network.py
 # ──────────────────────────────────────────────────────────────────────────
 
-# mod_ad_network.py — Active Directory & Network Pentest Module for NEXUS
-# Merged into nexus.py at build time. All functions use interfaces above.
+# mod_ad_network.py — Active Directory & Network Pentest Module for HAKUZA
+# Merged into hakuza.py at build time. All functions use interfaces above.
 #
 # Author  : Divith D Shetty | CEH · CRTP · CAISP
 # Purpose : cmd_ad, cmd_network, cmd_lateral — AD & network pentest playbooks
 #
 
-# At merge time all nexus_interfaces symbols are already in scope.
+# At merge time all hakuza_interfaces symbols are already in scope.
 # This import line is kept as the canonical merge marker.
 
 # ---------------------------------------------------------------------------
@@ -4767,7 +4431,7 @@ certipy relay -target 'http://<CA_HOST>/certsrv/certfnsh.asp' -ca '<CA_NAME>'
 ### GPO Abuse / lsass / Token Impersonation
 ```bash
 # GPO abuse via SharpGPOAbuse (if you have write on a GPO)
-SharpGPOAbuse.exe --AddComputerTask --TaskName "nexus" \
+SharpGPOAbuse.exe --AddComputerTask --TaskName "hakuza" \
   --Author "<DOMAIN>\Administrator" --Command "cmd.exe" \
   --Arguments "/c net localgroup administrators <USER> /add" \
   --GPOName "<TARGET_GPO>"
@@ -4931,8 +4595,8 @@ schtasks /create /sc onlogon /tn "WindowsUpdate" /tr "C:\\Temp\\beacon.exe" \
 
 # WMI event subscription (fileless persistence)
 $filter = Set-WmiInstance -Class __EventFilter -Namespace root\\subscription \
-  -Arguments @{Name='NexusTrigger';EventNamespace='root\\cimv2';
-    QueryLanguage='WQL';Query="SELECT * FROM __TimerEvent WHERE TimerID='NexusTimer'"}
+  -Arguments @{Name='HakuzaTrigger';EventNamespace='root\\cimv2';
+    QueryLanguage='WQL';Query="SELECT * FROM __TimerEvent WHERE TimerID='HakuzaTimer'"}
 
 # Skeleton Key (patches LSASS — lets any account auth with master password)
 # Mimikatz: misc::skeleton
@@ -4946,7 +4610,7 @@ $filter = Set-WmiInstance -Class __EventFilter -Namespace root\\subscription \
 
 def cmd_ad(args, console) -> None:
     """
-    nexus ad [--dc <ip>] [--domain <domain>] [--user <user>] [--save]
+    hakuza ad [--dc <ip>] [--domain <domain>] [--user <user>] [--save]
 
     Generates a complete Active Directory pentest playbook for the current
     engagement via Claude (streamed), then offers to log phase findings.
@@ -4970,7 +4634,7 @@ def cmd_ad(args, console) -> None:
             f"[bold]DC / Target:[/bold] {dc_ip}\n"
             f"[bold]Domain:[/bold]      {domain}\n"
             f"[bold]User:[/bold]        {user}",
-            title="[bold red]  NEXUS — Active Directory Pentest[/bold red]",
+            title="[bold red]  HAKUZA — Active Directory Pentest[/bold red]",
             border_style="red",
             expand=False,
         )
@@ -5018,7 +4682,7 @@ def cmd_ad(args, console) -> None:
         # ------------------------------------------------------------------
         if do_save and response:
             ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-            eng_dir = NEXUS_DIR / "engagements" / eng["name"]
+            eng_dir = HAKUZA_DIR / "engagements" / eng["name"]
             reports_dir = eng_dir / "reports"
             reports_dir.mkdir(parents=True, exist_ok=True)
             out_path = reports_dir / f"ad_playbook_{ts}.md"
@@ -5063,7 +4727,7 @@ def cmd_ad(args, console) -> None:
     console.print(Rule("[bold yellow]Log Findings[/bold yellow]", style="dim yellow"))
     console.print(
         "[yellow]Do you want to log placeholder findings for each AD phase?\n"
-        "You can edit them later with [bold]nexus update[/bold].[/yellow]"
+        "You can edit them later with [bold]hakuza update[/bold].[/yellow]"
     )
 
     phase_findings = [
@@ -5122,7 +4786,7 @@ def cmd_ad(args, console) -> None:
                 mitre=mitre,
                 description=desc,
                 remediation=rem,
-                tool="nexus-ad",
+                tool="hakuza-ad",
                 url=dc_ip,
             )
             console.print(
@@ -5131,17 +4795,17 @@ def cmd_ad(args, console) -> None:
             )
         console.print(
             f"\n[green]All 6 phase findings saved.[/green] "
-            f"Edit with [cyan]nexus update <short_id>[/cyan]."
+            f"Edit with [cyan]hakuza update <short_id>[/cyan]."
         )
     else:
-        console.print("[dim]Skipped. Use [bold]nexus add[/bold] to log findings manually.[/dim]")
+        console.print("[dim]Skipped. Use [bold]hakuza add[/bold] to log findings manually.[/dim]")
 
     console.print()
     console.print(
         Panel(
             f"[bold green]AD playbook complete.[/bold green]\n\n"
-            f"Next: [cyan]nexus lateral --from-host {dc_ip}[/cyan] for lateral movement chains.\n"
-            f"Then: [cyan]nexus findings[/cyan] to review all logged issues.",
+            f"Next: [cyan]hakuza lateral --from-host {dc_ip}[/cyan] for lateral movement chains.\n"
+            f"Then: [cyan]hakuza findings[/cyan] to review all logged issues.",
             title="[bold]Done[/bold]",
             border_style="green",
             expand=False,
@@ -5174,17 +4838,17 @@ nbtscan -r <RANGE>
 ```bash
 nmap -sV -sC -T4 --open \
   -p 21,22,23,25,53,80,110,111,135,139,143,443,445,993,995,1723,\
-3306,3389,5900,8080,8443 <RANGE> -oA nexus_quick
+3306,3389,5900,8080,8443 <RANGE> -oA hakuza_quick
 ```
 
 ### Full scan (all 65535 ports, T3 — stealth-friendly)
 ```bash
-nmap -sV -sC -T3 -p- --open <RANGE> -oA nexus_full
+nmap -sV -sC -T3 -p- --open <RANGE> -oA hakuza_full
 ```
 
 ### Stealth scan (SYN-only, T2, IDS evasion)
 ```bash
-nmap -sS -T2 --open -p- <RANGE> -oA nexus_stealth
+nmap -sS -T2 --open -p- <RANGE> -oA hakuza_stealth
 # Fragment packets for IDS bypass
 nmap -sS -f --mtu 24 -T2 --open -p- <RANGE>
 ```
@@ -5426,7 +5090,7 @@ _NETWORK_COMMON_CREDS = [
 
 def cmd_network(args, console) -> None:
     """
-    nexus network [--range <CIDR>] [--profile quick|full|stealth] [--save]
+    hakuza network [--range <CIDR>] [--profile quick|full|stealth] [--save]
 
     Generates an AI-augmented network pentest playbook with host discovery,
     service enumeration, protocol attacks, MITM, and pivoting.
@@ -5446,10 +5110,10 @@ def cmd_network(args, console) -> None:
         "quick": (
             f"nmap -sV -sC -T4 --open "
             f"-p 21,22,23,25,53,80,110,111,135,139,143,443,445,993,995,"
-            f"1723,3306,3389,5900,8080,8443 {cidr_range} -oA nexus_quick"
+            f"1723,3306,3389,5900,8080,8443 {cidr_range} -oA hakuza_quick"
         ),
-        "full": f"nmap -sV -sC -T3 -p- --open {cidr_range} -oA nexus_full",
-        "stealth": f"nmap -sS -T2 --open -p- {cidr_range} -oA nexus_stealth",
+        "full": f"nmap -sV -sC -T3 -p- --open {cidr_range} -oA hakuza_full",
+        "stealth": f"nmap -sS -T2 --open -p- {cidr_range} -oA hakuza_stealth",
     }
 
     console.print(
@@ -5459,7 +5123,7 @@ def cmd_network(args, console) -> None:
             f"[bold]Range:[/bold]       {cidr_range}\n"
             f"[bold]Profile:[/bold]     {profile}\n"
             f"[bold]Nmap cmd:[/bold]    {nmap_cmds[profile]}",
-            title="[bold blue]  NEXUS — Network Pentest[/bold blue]",
+            title="[bold blue]  HAKUZA — Network Pentest[/bold blue]",
             border_style="blue",
             expand=False,
         )
@@ -5540,7 +5204,7 @@ def cmd_network(args, console) -> None:
         # ------------------------------------------------------------------
         if do_save and response:
             ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-            eng_dir = NEXUS_DIR / "engagements" / eng["name"]
+            eng_dir = HAKUZA_DIR / "engagements" / eng["name"]
             reports_dir = eng_dir / "reports"
             reports_dir.mkdir(parents=True, exist_ok=True)
             out_path = reports_dir / f"network_playbook_{ts}.md"
@@ -5609,7 +5273,7 @@ def cmd_network(args, console) -> None:
                 mitre=mitre,
                 description=desc,
                 remediation=rem,
-                tool="nexus-network",
+                tool="hakuza-network",
                 url=cidr_range,
             )
             console.print(
@@ -5618,17 +5282,17 @@ def cmd_network(args, console) -> None:
             )
         console.print(
             "\n[green]5 network findings saved.[/green] "
-            "Edit with [cyan]nexus update <short_id>[/cyan]."
+            "Edit with [cyan]hakuza update <short_id>[/cyan]."
         )
     else:
-        console.print("[dim]Skipped. Use [bold]nexus add[/bold] to log findings manually.[/dim]")
+        console.print("[dim]Skipped. Use [bold]hakuza add[/bold] to log findings manually.[/dim]")
 
     console.print()
     console.print(
         Panel(
             f"[bold green]Network playbook complete.[/bold green]\n\n"
-            f"Tip: Import nmap XML results with [cyan]nexus import nexus_quick.xml[/cyan].\n"
-            f"Next: [cyan]nexus ad --dc <DC_IP> --domain <DOMAIN>[/cyan] if AD is detected.",
+            f"Tip: Import nmap XML results with [cyan]hakuza import hakuza_quick.xml[/cyan].\n"
+            f"Next: [cyan]hakuza ad --dc <DC_IP> --domain <DOMAIN>[/cyan] if AD is detected.",
             title="[bold]Done[/bold]",
             border_style="green",
             expand=False,
@@ -5783,7 +5447,7 @@ impacket-psexec <DOMAIN>/<DA_USER>:'<PASS>'@<DC_IP>
 
 def cmd_lateral(args, console) -> None:
     """
-    nexus lateral [--technique <technique>] [--from-host <host>] [--to-host <host>]
+    hakuza lateral [--technique <technique>] [--from-host <host>] [--to-host <host>]
 
     Generates a lateral movement decision tree based on the access you currently have.
     Prompts for current access type, shows exact commands for each scenario.
@@ -5803,7 +5467,7 @@ def cmd_lateral(args, console) -> None:
             f"[bold]To host:[/bold]     {to_host}\n"
             + (f"[bold]Technique:[/bold]   {technique}" if technique else
                "[bold]Technique:[/bold]   (all — decision tree mode)"),
-            title="[bold yellow]  NEXUS — Lateral Movement[/bold yellow]",
+            title="[bold yellow]  HAKUZA — Lateral Movement[/bold yellow]",
             border_style="yellow",
             expand=False,
         )
@@ -5945,7 +5609,7 @@ def cmd_lateral(args, console) -> None:
                 "Deploy Privileged Access Workstations (PAW) for admin tasks. "
                 "Monitor lateral movement indicators: Event IDs 4624 (type 3), 4648, 7045."
             ),
-            tool="nexus-lateral",
+            tool="hakuza-lateral",
             url=f"{from_host} → {to_host}",
         )
         console.print(
@@ -5959,8 +5623,8 @@ def cmd_lateral(args, console) -> None:
     console.print(
         Panel(
             "[bold green]Lateral movement analysis complete.[/bold green]\n\n"
-            "Next: [cyan]nexus ad[/cyan] to escalate to Domain Admin,\n"
-            "or    [cyan]nexus findings[/cyan] to review all logged findings.",
+            "Next: [cyan]hakuza ad[/cyan] to escalate to Domain Admin,\n"
+            "or    [cyan]hakuza findings[/cyan] to review all logged findings.",
             title="[bold]Done[/bold]",
             border_style="green",
             expand=False,
@@ -6055,7 +5719,7 @@ def _print_lateral_technique_table(console) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ARGPARSE ADDITIONS — paste into build_parser() in nexus.py
+# ARGPARSE ADDITIONS — paste into build_parser() in hakuza.py
 # ---------------------------------------------------------------------------
 #
 #   p_ad = sub.add_parser("ad", help="Active Directory pentest playbook (CRTP-grade)")
@@ -6077,7 +5741,7 @@ def _print_lateral_technique_table(console) -> None:
 #   p_lateral.add_argument("--to-host",    metavar="HOST",      help="Target host / IP")
 
 # ---------------------------------------------------------------------------
-# DISPATCH ADDITIONS — paste into dispatch dict in main() in nexus.py
+# DISPATCH ADDITIONS — paste into dispatch dict in main() in hakuza.py
 # ---------------------------------------------------------------------------
 #
 #   "ad":      cmd_ad,
@@ -6092,13 +5756,13 @@ def _print_lateral_technique_table(console) -> None:
 # ──────────────────────────────────────────────────────────────────────────
 
 """
-mod_dashboard.py — NEXUS Live Dashboard
-Full-screen TUI dashboard for the NEXUS pentest platform.
+mod_dashboard.py — HAKUZA Live Dashboard
+Full-screen TUI dashboard for the HAKUZA pentest platform.
 
-Usage: nexus dashboard [--refresh <seconds>] [--no-ai]
+Usage: hakuza dashboard [--refresh <seconds>] [--no-ai]
 
-Imports everything it needs from the nexus module when used standalone,
-or relies on the shared namespace when imported by nexus.py.
+Imports everything it needs from the hakuza module when used standalone,
+or relies on the shared namespace when imported by hakuza.py.
 """
 
 import threading
@@ -6108,11 +5772,11 @@ from rich.console import Console, Group
 from rich.padding import Padding
 
 # ---------------------------------------------------------------------------
-# These names are resolved at call time from the nexus module namespace.
-# When this file is exec'd/imported inside nexus.py they already exist.
+# These names are resolved at call time from the hakuza module namespace.
+# When this file is exec'd/imported inside hakuza.py they already exist.
 # ---------------------------------------------------------------------------
 # _require_engagement, get_client_or_none, list_findings, get_finding_count,
-# get_db, SEVERITY_ORDER, SEV_COLORS, NEXUS_DIR, ENGAGEMENTS_DIR,
+# get_db, SEVERITY_ORDER, SEV_COLORS, HAKUZA_DIR, ENGAGEMENTS_DIR,
 # sev_badge, ask_claude, SYSTEM_PROMPT
 # ---------------------------------------------------------------------------
 
@@ -6202,14 +5866,14 @@ def _sev_bar(count: int, max_count: int, width: int = 16) -> Text:
 # ---------------------------------------------------------------------------
 
 def _build_header_panel(eng: dict, refresh_count: int) -> Panel:
-    """Top header bar: NEXUS | engagement name | client | LIVE indicator."""
+    """Top header bar: HAKUZA | engagement name | client | LIVE indicator."""
     name = eng.get("name", "unknown")
     client = eng.get("client", "")
     target = eng.get("target", "")
     eng_type = eng.get("type", "web").upper()
 
     t = Text(justify="center")
-    t.append("  NEXUS  ", style="bold cyan on black")
+    t.append("  HAKUZA  ", style="bold cyan on black")
     t.append("  |  ", style="dim white")
     t.append(name, style="bold white")
     t.append("  |  ", style="dim white")
@@ -6452,9 +6116,9 @@ def _build_next_steps_panel(counts: dict, ai_notes: Optional[str]) -> Panel:
     if counts.get("critical", 0) == 0 and counts.get("high", 0) == 0:
         suggestions.append(("[bold yellow]1.[/bold yellow]", "Run nuclei full profile: nuclei -u <target> -tags cves"))
         suggestions.append(("[bold yellow]2.[/bold yellow]", "Fuzz API endpoints: ffuf -w params.txt -u <url>/FUZZ"))
-    suggestions.append(("[bold cyan]3.[/bold cyan]", "nexus analyze  — AI deep dive on all findings"))
-    suggestions.append(("[bold cyan]4.[/bold cyan]", "nexus report   — generate the pentest report"))
-    suggestions.append(("[bold cyan]5.[/bold cyan]", "nexus chain    — build exploit chains"))
+    suggestions.append(("[bold cyan]3.[/bold cyan]", "hakuza analyze  — AI deep dive on all findings"))
+    suggestions.append(("[bold cyan]4.[/bold cyan]", "hakuza report   — generate the pentest report"))
+    suggestions.append(("[bold cyan]5.[/bold cyan]", "hakuza chain    — build exploit chains"))
 
     content = Text()
     for num, step in suggestions[:5]:
@@ -6586,7 +6250,7 @@ def _fetch_ai_notes(eng: dict, findings: list, counts: dict, result_holder: list
 
 def cmd_dashboard(args, console: Console) -> None:
     """
-    nexus dashboard [--refresh <seconds>] [--no-ai]
+    hakuza dashboard [--refresh <seconds>] [--no-ai]
 
     Opens a full-screen Rich Live dashboard that auto-refreshes every N seconds
     (default 3).  Press q to quit, r to force refresh, a to trigger AI analysis.
@@ -6700,7 +6364,7 @@ def cmd_dashboard(args, console: Console) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ARGPARSE ADDITIONS  (add to build_parser() in nexus.py)
+# ARGPARSE ADDITIONS  (add to build_parser() in hakuza.py)
 # ---------------------------------------------------------------------------
 # In build_parser(), inside the sub-commands block, add:
 #
@@ -6717,9 +6381,9 @@ def cmd_dashboard(args, console: Console) -> None:
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# DISPATCH ADDITION  (add to the dispatch dict in main() in nexus.py)
+# DISPATCH ADDITION  (add to the dispatch dict in main() in hakuza.py)
 # ---------------------------------------------------------------------------
-# Import at top of nexus.py:
+# Import at top of hakuza.py:
 #   from mod_dashboard import cmd_dashboard
 #
 # In the dispatch dict:
@@ -6734,13 +6398,13 @@ def cmd_dashboard(args, console: Console) -> None:
 # ──────────────────────────────────────────────────────────────────────────
 
 """
-mod_ai_batch.py — AI-powered batch operations on findings for NEXUS.
+mod_ai_batch.py — AI-powered batch operations on findings for HAKUZA.
 
 Commands:
-    nexus deduplicate  [--dry-run] [--auto]
-    nexus enrich       [--all] [--missing-cvss] [--missing-cwe] [--finding <id>]
-    nexus prioritize   [--format table|matrix|timeline] [--bfsi]
-    nexus matrix       [--save]
+    hakuza deduplicate  [--dry-run] [--auto]
+    hakuza enrich       [--all] [--missing-cvss] [--missing-cwe] [--finding <id>]
+    hakuza prioritize   [--format table|matrix|timeline] [--bfsi]
+    hakuza matrix       [--save]
 
 All AI calls use cached SYSTEM_PROMPT via ask_claude() / stream_to_console().
 All DB writes use the shared get_db() singleton.
@@ -6750,8 +6414,8 @@ All DB writes use the shared get_db() singleton.
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
 # ---------------------------------------------------------------------------
-# Interfaces imported from the host module at runtime (nexus.py).
-# Declared here only for IDE navigation; the module is run inside nexus's
+# Interfaces imported from the host module at runtime (hakuza.py).
+# Declared here only for IDE navigation; the module is run inside hakuza's
 # namespace so all names are already in scope when these functions execute.
 # ---------------------------------------------------------------------------
 # _require_engagement, get_client, ask_claude, stream_to_console
@@ -6854,7 +6518,7 @@ def _mark_finding_status(finding_id: str, status: str) -> None:
 
 def cmd_deduplicate(args, console: Console) -> None:
     """
-    nexus deduplicate [--dry-run] [--auto]
+    hakuza deduplicate [--dry-run] [--auto]
 
     Uses AI to find duplicate/overlapping findings and optionally merge them
     by marking duplicates with status='fp'.
@@ -6866,7 +6530,7 @@ def cmd_deduplicate(args, console: Console) -> None:
     except SystemExit:
         console.print(
             "[red]Anthropic API key required for deduplication.[/red]\n"
-            "[dim]Set it with: nexus config --set api_key=sk-...[/dim]"
+            "[dim]Set it with: hakuza config --set api_key=sk-...[/dim]"
         )
         return
 
@@ -7063,7 +6727,7 @@ If no duplicates are found, return an empty array: []"""
             f"[bold]Findings marked as duplicate:[/bold] {marked_count}\n"
             f"[bold]Findings kept as primary:[/bold] {kept_count}\n\n"
             f"[dim]Duplicates are now status='fp' (false positive / duplicate).[/dim]\n"
-            f"[dim]Run [bold]nexus findings[/bold] to review the cleaned list.[/dim]",
+            f"[dim]Run [bold]hakuza findings[/bold] to review the cleaned list.[/dim]",
             title="[bold]Deduplication Summary[/bold]",
             border_style="green",
             expand=False,
@@ -7108,7 +6772,7 @@ def _needs_enrichment(f: dict, mode: str) -> bool:
 
 def cmd_enrich(args, console: Console) -> None:
     """
-    nexus enrich [--all] [--missing-cvss] [--missing-cwe] [--finding <id>]
+    hakuza enrich [--all] [--missing-cvss] [--missing-cwe] [--finding <id>]
 
     Batch AI enrichment of findings missing CVSS/CWE/impact/remediation.
     """
@@ -7119,7 +6783,7 @@ def cmd_enrich(args, console: Console) -> None:
     except SystemExit:
         console.print(
             "[red]Anthropic API key required for enrichment.[/red]\n"
-            "[dim]Set it with: nexus config --set api_key=sk-...[/dim]"
+            "[dim]Set it with: hakuza config --set api_key=sk-...[/dim]"
         )
         return
 
@@ -7286,7 +6950,7 @@ def cmd_enrich(args, console: Console) -> None:
     if failed:
         summary_lines.append(f"[bold yellow]Failed (AI parse error):[/bold yellow] {', '.join(failed)}")
     summary_lines.append(
-        "\n[dim]Run [bold]nexus findings --full[/bold] to see enriched details.[/dim]"
+        "\n[dim]Run [bold]hakuza findings --full[/bold] to see enriched details.[/dim]"
     )
 
     console.print(
@@ -7319,7 +6983,7 @@ _EFFORT_LABEL = {
 
 def cmd_prioritize(args, console: Console) -> None:
     """
-    nexus prioritize [--format table|matrix|timeline] [--bfsi]
+    hakuza prioritize [--format table|matrix|timeline] [--bfsi]
 
     AI-powered remediation prioritization with CVSS, exploitability,
     business impact, effort, and attack-chain potential.
@@ -7331,7 +6995,7 @@ def cmd_prioritize(args, console: Console) -> None:
     except SystemExit:
         console.print(
             "[red]Anthropic API key required for prioritization.[/red]\n"
-            "[dim]Set it with: nexus config --set api_key=sk-...[/dim]"
+            "[dim]Set it with: hakuza config --set api_key=sk-...[/dim]"
         )
         return
 
@@ -7614,7 +7278,7 @@ _CHAIN_STYLE = {
 
 def cmd_matrix(args, console: Console) -> None:
     """
-    nexus matrix [--save]
+    hakuza matrix [--save]
 
     Generate a full attack-chain matrix showing which findings can be combined,
     plus the top 3 chains with step-by-step exploitation.
@@ -7626,7 +7290,7 @@ def cmd_matrix(args, console: Console) -> None:
     except SystemExit:
         console.print(
             "[red]Anthropic API key required for matrix generation.[/red]\n"
-            "[dim]Set it with: nexus config --set api_key=sk-...[/dim]"
+            "[dim]Set it with: hakuza config --set api_key=sk-...[/dim]"
         )
         return
 
@@ -7849,7 +7513,7 @@ def _save_matrix_to_file(
 
     eng_name = eng.get("name", "engagement")
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_dir = Path.home() / ".nexus" / "engagements" / eng_name
+    out_dir = Path.home() / ".hakuza" / "engagements" / eng_name
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"attack_matrix_{ts}.md"
 
@@ -7898,7 +7562,7 @@ def _save_matrix_to_file(
 # ---------------------------------------------------------------------------
 # ARGPARSE REGISTRATION
 # ---------------------------------------------------------------------------
-# To wire these commands into nexus.py's build_parser() and dispatch table,
+# To wire these commands into hakuza.py's build_parser() and dispatch table,
 # add the following snippet inside build_parser() and in the dispatch dict.
 #
 # ── build_parser() additions ────────────────────────────────────────────────
@@ -7948,7 +7612,7 @@ def _save_matrix_to_file(
 # ──────────────────────────────────────────────────────────────────────────
 
 """
-mod_report.py — Enhanced professional report generation for NEXUS pentest platform.
+mod_report.py — Enhanced professional report generation for HAKUZA pentest platform.
 Replaces the basic cmd_report with client-ready HTML reports featuring embedded
 SVG charts, risk gauge, collapsible finding cards, and print-ready layout.
 
@@ -7959,10 +7623,10 @@ Divith D Shetty | CEH · CRTP · CAISP | Alvarez & Marsal
 import markdown2
 
 # ---------------------------------------------------------------------------
-# Imported from nexus.py at runtime (available in merged namespace):
+# Imported from hakuza.py at runtime (available in merged namespace):
 #   _require_engagement, get_client, get_client_or_none, stream_to_console
 #   list_findings, get_finding_count, get_recon_summary
-#   SYSTEM_PROMPT, NEXUS_DIR, ENGAGEMENTS_DIR, VERSION
+#   SYSTEM_PROMPT, HAKUZA_DIR, ENGAGEMENTS_DIR, VERSION
 #   sev_badge, Console, Panel, Rule, Markdown, Progress, SpinnerColumn, TextColumn
 #   datetime, json, re, math
 # ---------------------------------------------------------------------------
@@ -7973,7 +7637,7 @@ import markdown2
 
 _TESTER_NAME = "Divith D Shetty"
 _TESTER_CREDS = "CEH · CRTP · CAISP | 4+ Years VAPT | Alvarez & Marsal"
-_NEXUS_VERSION = "2.0.0"
+_HAKUZA_VERSION = "2.0.0"
 
 _SEV_HTML_COLORS = {
     "critical": "#f85149",
@@ -8203,7 +7867,7 @@ Two paragraphs:
 - Path forward: recommended re-test timeline, ongoing security program suggestions
 
 ---
-*Report generated by NEXUS {_NEXUS_VERSION} on {now_str}. Assessor: {tester} ({_TESTER_CREDS}). Classification: CONFIDENTIAL — Restricted Distribution.*"""
+*Report generated by HAKUZA {_HAKUZA_VERSION} on {now_str}. Assessor: {tester} ({_TESTER_CREDS}). Classification: CONFIDENTIAL — Restricted Distribution.*"""
 
 
 def _build_fallback_report_md(eng: dict, findings: list, counts: dict, score: int,
@@ -8226,7 +7890,7 @@ def _build_fallback_report_md(eng: dict, findings: list, counts: dict, score: in
         f"**Date:** {now_str}  |  **Assessor:** {tester} ({_TESTER_CREDS})",
         "",
         "> Generated without AI narrative (no `ANTHROPIC_API_KEY` set). "
-        "Set one and re-run `nexus report` for a full written analysis and attack-chain reasoning.",
+        "Set one and re-run `hakuza report` for a full written analysis and attack-chain reasoning.",
         "",
         "## Executive Summary",
         "",
@@ -8279,7 +7943,7 @@ def _build_fallback_report_md(eng: dict, findings: list, counts: dict, score: in
             lines.append("")
 
     lines.append("---")
-    lines.append(f"*Report generated by NEXUS {_NEXUS_VERSION} on {now_str} (findings-only mode, no AI narrative). "
+    lines.append(f"*Report generated by HAKUZA {_HAKUZA_VERSION} on {now_str} (findings-only mode, no AI narrative). "
                  f"Assessor: {tester} ({_TESTER_CREDS}). Classification: CONFIDENTIAL — Restricted Distribution.*")
 
     return "\n".join(lines)
@@ -8383,22 +8047,27 @@ def _finding_card_html(f: dict, idx: int) -> str:
     color = _SEV_HTML_COLORS.get(sev, "#8b949e")
     bg = _SEV_HTML_BG.get(sev, "rgba(139,148,158,0.1)")
     short_id = f.get("short_id") or f"F{idx:03d}"
-    title = (f.get("title") or "Untitled Finding").replace("<", "&lt;").replace(">", "&gt;")
+    # Every field below can originate from a scanned target (a nuclei finding's
+    # title, or a pentester pasting a raw XSS payload into a description) —
+    # all must be HTML-escaped before interpolation, or the report itself
+    # becomes a stored-XSS vector when opened in a browser.
+    title = html.escape(f.get("title") or "Untitled Finding")
     cvss = f.get("cvss_score")
     cvss_str = f"{cvss:.1f}" if cvss is not None else "N/A"
     cvss_color = ("#f85149" if (cvss or 0) >= 9.0 else
                   "#d29922" if (cvss or 0) >= 7.0 else
                   "#ecc94b" if (cvss or 0) >= 4.0 else
                   "#3fb950")
-    cwe = (f.get("cwe") or "").replace("<", "&lt;")
-    url = (f.get("url") or "").replace("<", "&lt;").replace(">", "&gt;")
-    status = (f.get("status") or "open").capitalize()
-    owasp = (f.get("owasp") or "").replace("<", "&lt;")
-    mitre = (f.get("mitre") or "").replace("<", "&lt;")
-    desc = (f.get("description") or "No description provided.")
-    impact = (f.get("impact") or "Impact not specified.")
-    remediation = (f.get("remediation") or "Remediation not specified.")
-    refs = (f.get("refs") or "")
+    cwe = html.escape(f.get("cwe") or "")
+    url_raw = f.get("url") or ""
+    url = html.escape(url_raw)
+    status = html.escape((f.get("status") or "open").capitalize())
+    owasp = html.escape(f.get("owasp") or "")
+    mitre = html.escape(f.get("mitre") or "")
+    desc = html.escape(f.get("description") or "No description provided.")
+    impact = html.escape(f.get("impact") or "Impact not specified.")
+    remediation = html.escape(f.get("remediation") or "Remediation not specified.")
+    refs = f.get("refs") or ""
 
     meta_parts = []
     if cwe:
@@ -8408,12 +8077,13 @@ def _finding_card_html(f: dict, idx: int) -> str:
     if mitre:
         meta_parts.append(f'<span class="meta-tag">MITRE: {mitre}</span>')
     if url:
-        meta_parts.append(f'<span class="meta-tag url-tag" title="{url}">URL: {url[:60]}{"…" if len(url)>60 else ""}</span>')
+        url_display = html.escape(url_raw[:60] + ("…" if len(url_raw) > 60 else ""))
+        meta_parts.append(f'<span class="meta-tag url-tag" title="{url}">URL: {url_display}</span>')
     meta_parts.append(f'<span class="meta-tag status-tag">{status}</span>')
 
     refs_html = ""
     if refs:
-        refs_esc = refs.replace("<", "&lt;").replace(">", "&gt;")
+        refs_esc = html.escape(refs)
         refs_html = f"<h4>References</h4><p class='refs-text'>{refs_esc}</p>"
 
     return f"""<div class="finding-card sev-{sev}" id="finding-{short_id}" style="border-left-color:{color};background:{bg}">
@@ -8441,7 +8111,7 @@ def _finding_card_html(f: dict, idx: int) -> str:
 # FULL HTML REPORT GENERATOR
 # ---------------------------------------------------------------------------
 
-def _generate_nexus_html_report(
+def _generate_hakuza_html_report(
     markdown_content: str,
     eng: dict,
     findings: list,
@@ -8454,10 +8124,15 @@ def _generate_nexus_html_report(
     """
     now_str = datetime.now().strftime("%Y-%m-%d")
     now_long = datetime.now().strftime("%B %d, %Y")
-    client_name = eng.get("client") or eng.get("client_name") or "Confidential Client"
-    tester = eng.get("tester") or _TESTER_NAME
-    target = eng.get("target") or eng.get("target_url") or "N/A"
-    eng_type = (eng.get("type") or "web").upper()
+    # client/target/tester are free-text (no slug validation like the
+    # engagement name has) and end up in HTML — including inside <title>,
+    # an RCDATA context where a literal "</title>" would terminate early and
+    # let subsequent content be parsed as markup. Escape at the source so
+    # every use below is safe by construction.
+    client_name = html.escape(eng.get("client") or eng.get("client_name") or "Confidential Client")
+    tester = html.escape(eng.get("tester") or _TESTER_NAME)
+    target = html.escape(eng.get("target") or eng.get("target_url") or "N/A")
+    eng_type = html.escape((eng.get("type") or "web").upper())
     eng_name = eng.get("name") or "engagement"
     risk_label = _risk_label(score)
     risk_color = _risk_color(score)
@@ -8469,9 +8144,17 @@ def _generate_nexus_html_report(
     c_low  = counts.get("low", 0)
     c_info = counts.get("informational", 0)
 
-    # Convert markdown body to HTML using markdown2
+    # Convert markdown body to HTML using markdown2. safe_mode="escape" is load-
+    # bearing here, not optional: markdown_content embeds raw finding data
+    # (title/url/description/etc.) that can legitimately contain literal
+    # "<script>...</script>" — e.g. a pentester documenting the exact XSS
+    # payload they used, or a nuclei finding whose title reflects target
+    # content. Without safe_mode, markdown2 passes embedded HTML through
+    # unescaped, turning the pentester's own report into a stored-XSS
+    # vector when opened in a browser.
     md_html = markdown2.markdown(
         markdown_content or "",
+        safe_mode="escape",
         extras=["fenced-code-blocks", "tables", "header-ids",
                 "break-on-newline", "strike", "code-friendly"],
     )
@@ -8488,7 +8171,7 @@ def _generate_nexus_html_report(
     # Navigation anchors from markdown headers
     nav_items = []
     for m in re.finditer(r'^## (\d+)\. (.+)$', markdown_content or "", re.MULTILINE):
-        num, heading = m.group(1), m.group(2).strip()
+        num, heading = m.group(1), html.escape(m.group(2).strip())
         anchor = f"section-{num}"
         nav_items.append(f'<a href="#{anchor}" class="nav-item">{num}. {heading}</a>')
     nav_html = "\n".join(nav_items)
@@ -8964,7 +8647,7 @@ def _generate_nexus_html_report(
       font-size: 12.5px;
       line-height: 2;
     }}
-    .report-footer .nexus-badge {{
+    .report-footer .hakuza-badge {{
       display: inline-block;
       background: var(--surface);
       border: 1px solid var(--border);
@@ -9024,7 +8707,7 @@ def _generate_nexus_html_report(
 </head>
 <body>
   <div class="confidential-banner">
-    &#x1F512; CONFIDENTIAL — RESTRICTED DISTRIBUTION — NEXUS PENTEST PLATFORM
+    &#x1F512; CONFIDENTIAL — RESTRICTED DISTRIBUTION — HAKUZA PENTEST PLATFORM
   </div>
 
   <div class="layout">
@@ -9122,11 +8805,11 @@ def _generate_nexus_html_report(
 
       <!-- FOOTER -->
       <footer class="report-footer">
-        <div>Generated by <strong>NEXUS Pentest Platform v{_NEXUS_VERSION}</strong> &bull; {now_str}</div>
+        <div>Generated by <strong>HAKUZA Pentest Platform v{_HAKUZA_VERSION}</strong> &bull; {now_str}</div>
         <div>{tester} &bull; {_TESTER_CREDS}</div>
         <div>Powered by Anthropic Claude AI</div>
         <div>This document is classified CONFIDENTIAL. Unauthorised distribution is prohibited.</div>
-        <div class="nexus-badge">NEXUS v{_NEXUS_VERSION}</div>
+        <div class="hakuza-badge">HAKUZA v{_HAKUZA_VERSION}</div>
       </footer>
     </main>
   </div>
@@ -9201,7 +8884,7 @@ def _generate_nexus_html_report(
 
 def cmd_diff_report(args, console) -> None:
     """
-    nexus diff-report --old <file> --new <file> [--output <file>]
+    hakuza diff-report --old <file> --new <file> [--output <file>]
 
     Compare two exported JSON finding lists and emit a delta report:
     - NEW findings (in new but not old)
@@ -9212,7 +8895,7 @@ def cmd_diff_report(args, console) -> None:
     new_file = getattr(args, "new", None)
 
     if not old_file or not new_file:
-        console.print("[red]Usage: nexus diff-report --old <old.json> --new <new.json>[/red]")
+        console.print("[red]Usage: hakuza diff-report --old <old.json> --new <new.json>[/red]")
         return
 
     def _load(path: str) -> dict:
@@ -9365,7 +9048,7 @@ def cmd_diff_report(args, console) -> None:
 
 def cmd_report(args, console) -> None:
     """
-    nexus report [--html] [--output FILE] [--client NAME] [--type executive|technical|full]
+    hakuza report [--html] [--output FILE] [--client NAME] [--type executive|technical|full]
 
     Generate a professional penetration test report for the current engagement.
     Streams Claude's analysis, then produces an optional standalone HTML file
@@ -9443,7 +9126,7 @@ def cmd_report(args, console) -> None:
     if gen_html:
         console.print("\n[cyan]Generating HTML report...[/cyan]")
         try:
-            html_content = _generate_nexus_html_report(
+            html_content = _generate_hakuza_html_report(
                 markdown_content=full_md or "",
                 eng=eng,
                 findings=findings,
@@ -9480,10 +9163,10 @@ def cmd_report(args, console) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ARGPARSE + DISPATCH (for nexus.py integration)
+# ARGPARSE + DISPATCH (for hakuza.py integration)
 # ---------------------------------------------------------------------------
 #
-# In nexus.py's argument parser, add:
+# In hakuza.py's argument parser, add:
 #
 #   report_parser = sub.add_parser("report", help="Generate pentest report")
 #   report_parser.add_argument("--html",   action="store_true",
@@ -9515,7 +9198,7 @@ def cmd_report(args, console) -> None:
 # ──────────────────────────────────────────────────────────────────────────
 
 """
-NEXUS mod_mobile_cloud.py — Mobile App & Cloud Security Testing Module
+HAKUZA mod_mobile_cloud.py — Mobile App & Cloud Security Testing Module
 Divith D Shetty | CAISP · CRTP | BFSI Specialist
 
 Adds: cmd_mobile, cmd_ios, cmd_cloud, cmd_iot
@@ -9523,11 +9206,11 @@ Append argparse sub-commands and dispatch entries from bottom of this file.
 """
 
 # ---------------------------------------------------------------------------
-# IMPORTS — uses interfaces already present in nexus.py
+# IMPORTS — uses interfaces already present in hakuza.py
 # ---------------------------------------------------------------------------
 
 
-# Rich (all imported in nexus.py globals; imported again so module is self-contained)
+# Rich (all imported in hakuza.py globals; imported again so module is self-contained)
 
 
 # ---------------------------------------------------------------------------
@@ -9542,7 +9225,7 @@ def _require_engagement(console: Console) -> dict:
             Panel(
                 "[red]No active engagement.[/red]\n\n"
                 "Create one first:\n"
-                "  [bold]nexus init <name> --client <client> --target <target> --type mobile[/bold]",
+                "  [bold]hakuza init <name> --client <client> --target <target> --type mobile[/bold]",
                 title="Error",
                 border_style="red",
                 expand=False,
@@ -9566,7 +9249,7 @@ def _section(console: Console, title: str) -> None:
 
 
 def _offer_finding(console: Console, eng: dict, title: str, severity: str,
-                   description: str, remediation: str, tool: str = "nexus-mobile") -> None:
+                   description: str, remediation: str, tool: str = "hakuza-mobile") -> None:
     """Prompt the tester to add a finding to the engagement DB."""
     if Confirm.ask(f"\n[yellow]Add '[bold]{title}[/bold]' as a {severity.upper()} finding?[/yellow]", default=False):
         url = Prompt.ask("  URL / identifier", default=eng.get("target", ""))
@@ -9590,7 +9273,7 @@ def _offer_finding(console: Console, eng: dict, title: str, severity: str,
 
 def cmd_mobile(args, console: Console) -> None:
     """
-    nexus mobile [--apk <path>] [--package <com.example.app>] [--phase static|dynamic|full]
+    hakuza mobile [--apk <path>] [--package <com.example.app>] [--phase static|dynamic|full]
 
     Android security testing: static analysis, dynamic analysis, OWASP Mobile Top 10.
     """
@@ -9606,7 +9289,7 @@ def cmd_mobile(args, console: Console) -> None:
             f"[bold]APK:[/bold]         {apk_path or '[dim]not provided[/dim]'}\n"
             f"[bold]Package:[/bold]     {package or '[dim]not provided[/dim]'}\n"
             f"[bold]Phase:[/bold]       {phase}",
-            title="[bold cyan]  NEXUS Android Security Testing[/bold cyan]",
+            title="[bold cyan]  HAKUZA Android Security Testing[/bold cyan]",
             border_style="cyan",
             expand=False,
         )
@@ -9837,7 +9520,7 @@ def cmd_mobile(args, console: Console) -> None:
         description=f"Android mobile security testing initiated for package {package or eng['target']}. "
                     "Static and dynamic analysis checklist reviewed. Follow-up findings to be logged separately.",
         remediation="Follow OWASP MASVS L2 controls. Enforce certificate pinning, disable backup/debug flags.",
-        tool="nexus-mobile",
+        tool="hakuza-mobile",
     )
 
 
@@ -9847,7 +9530,7 @@ def cmd_mobile(args, console: Console) -> None:
 
 def cmd_ios(args, console: Console) -> None:
     """
-    nexus ios [--ipa <path>] [--bundle <com.example.app>]
+    hakuza ios [--ipa <path>] [--bundle <com.example.app>]
 
     iOS security testing: static analysis, dynamic analysis, OWASP Mobile Top 10.
     """
@@ -9861,7 +9544,7 @@ def cmd_ios(args, console: Console) -> None:
             f"[bold]Target:[/bold]      {eng['target']}\n"
             f"[bold]IPA:[/bold]         {ipa_path or '[dim]not provided[/dim]'}\n"
             f"[bold]Bundle ID:[/bold]   {bundle_id or '[dim]not provided[/dim]'}",
-            title="[bold cyan]  NEXUS iOS Security Testing[/bold cyan]",
+            title="[bold cyan]  HAKUZA iOS Security Testing[/bold cyan]",
             border_style="cyan",
             expand=False,
         )
@@ -10005,7 +9688,7 @@ def cmd_ios(args, console: Console) -> None:
                     "Static and dynamic analysis checklists reviewed.",
         remediation="Follow OWASP MASVS L2 for iOS. Enable ATS, enforce certificate pinning, "
                     "use Keychain with kSecAttrAccessibleWhenUnlockedThisDeviceOnly.",
-        tool="nexus-ios",
+        tool="hakuza-ios",
     )
 
 
@@ -10015,7 +9698,7 @@ def cmd_ios(args, console: Console) -> None:
 
 def cmd_cloud(args, console: Console) -> None:
     """
-    nexus cloud [--provider aws|azure|gcp|all] [--target <url_or_account>] [--profile <aws_profile>]
+    hakuza cloud [--provider aws|azure|gcp|all] [--target <url_or_account>] [--profile <aws_profile>]
 
     Cloud security testing: AWS, Azure, GCP attack paths + BFSI compliance.
     """
@@ -10030,7 +9713,7 @@ def cmd_cloud(args, console: Console) -> None:
             f"[bold]Provider:[/bold]    {provider}\n"
             f"[bold]Target:[/bold]      {target}\n"
             f"[bold]AWS Profile:[/bold] {profile}",
-            title="[bold cyan]  NEXUS Cloud Security Testing[/bold cyan]",
+            title="[bold cyan]  HAKUZA Cloud Security Testing[/bold cyan]",
             border_style="cyan",
             expand=False,
         )
@@ -10236,7 +9919,7 @@ def cmd_cloud(args, console: Console) -> None:
                     "Attack paths, IAM escalation paths, and BFSI compliance checklist reviewed.",
         remediation="Apply CIS benchmarks for the cloud provider. Enable Security Hub / Defender for Cloud. "
                     "Enforce MFA, encrypt all data at rest, restrict S3/Storage bucket public access.",
-        tool="nexus-cloud",
+        tool="hakuza-cloud",
     )
 
 
@@ -10246,7 +9929,7 @@ def cmd_cloud(args, console: Console) -> None:
 
 def cmd_iot(args, console: Console) -> None:
     """
-    nexus iot [--target <ip>] [--protocol all|mqtt|rtsp|modbus|snmp]
+    hakuza iot [--target <ip>] [--protocol all|mqtt|rtsp|modbus|snmp]
 
     IoT/OT security testing: protocol-specific checks, default credentials, firmware hints.
     """
@@ -10259,7 +9942,7 @@ def cmd_iot(args, console: Console) -> None:
             f"[bold]Engagement:[/bold] {eng['name']}  ({eng['client']})\n"
             f"[bold]Target:[/bold]     {target_ip}\n"
             f"[bold]Protocol:[/bold]   {protocol}",
-            title="[bold cyan]  NEXUS IoT/OT Security Testing[/bold cyan]",
+            title="[bold cyan]  HAKUZA IoT/OT Security Testing[/bold cyan]",
             border_style="cyan",
             expand=False,
         )
@@ -10272,7 +9955,7 @@ def cmd_iot(args, console: Console) -> None:
             "[bold cyan]Unauthenticated broker check[/bold cyan]\n"
             f"  mosquitto_sub -h {target_ip} -p 1883 -t '#' -v   # subscribe to ALL topics\n"
             f"  mosquitto_sub -h {target_ip} -p 1883 -t '$SYS/#' -v  # broker stats\n"
-            f"  mosquitto_pub -h {target_ip} -p 1883 -t 'test' -m 'nexus_probe'\n\n"
+            f"  mosquitto_pub -h {target_ip} -p 1883 -t 'test' -m 'hakuza_probe'\n\n"
             "[bold cyan]Auth bypass attempts[/bold cyan]\n"
             f"  mosquitto_sub -h {target_ip} -u '' -P '' -t '#' -v  # empty creds\n"
             f"  mosquitto_sub -h {target_ip} -u admin -P admin -t '#' -v\n"
@@ -10438,7 +10121,7 @@ def cmd_iot(args, console: Console) -> None:
         remediation="Change all default credentials. Disable unused protocols (Telnet, SNMPv1). "
                     "Segment IoT devices on isolated VLANs with strict ACLs. Enable encrypted protocols "
                     "(MQTTs, SNMPv3, HTTPS). Implement firmware update process.",
-        tool="nexus-iot",
+        tool="hakuza-iot",
     )
 
 
@@ -10485,7 +10168,7 @@ def register_mobile_cloud_commands(sub) -> None:
 
 # ---------------------------------------------------------------------------
 # DISPATCH ADDITIONS
-# Merge this dict into the dispatch table in nexus.py main():
+# Merge this dict into the dispatch table in hakuza.py main():
 #
 #   from mod_mobile_cloud import MOBILE_CLOUD_DISPATCH
 #   dispatch.update(MOBILE_CLOUD_DISPATCH)
@@ -10503,9 +10186,9 @@ MOBILE_CLOUD_DISPATCH = {
 
 if __name__ == "__main__":
     # mod_recon_plus (and any future standalone-importable module) resolves
-    # shared symbols via importlib.import_module("nexus") at call time. When
-    # run as `python3 nexus.py`, this process's own module is named
-    # "__main__", not "nexus" — aliasing it here avoids a second, wasteful
+    # shared symbols via importlib.import_module("hakuza") at call time. When
+    # run as `python3 hakuza.py`, this process's own module is named
+    # "__main__", not "hakuza" — aliasing it here avoids a second, wasteful
     # full re-execution of this file on first use of a recon-plus command.
-    sys.modules.setdefault("nexus", sys.modules["__main__"])
+    sys.modules.setdefault("hakuza", sys.modules["__main__"])
     main()

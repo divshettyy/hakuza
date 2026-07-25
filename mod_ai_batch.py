@@ -1,11 +1,11 @@
 """
-mod_ai_batch.py — AI-powered batch operations on findings for NEXUS.
+mod_ai_batch.py — AI-powered batch operations on findings for HAKUZA.
 
 Commands:
-    nexus deduplicate  [--dry-run] [--auto]
-    nexus enrich       [--all] [--missing-cvss] [--missing-cwe] [--finding <id>]
-    nexus prioritize   [--format table|matrix|timeline] [--bfsi]
-    nexus matrix       [--save]
+    hakuza deduplicate  [--dry-run] [--auto]
+    hakuza enrich       [--all] [--missing-cvss] [--missing-cwe] [--finding <id>]
+    hakuza prioritize   [--format table|matrix|timeline] [--bfsi]
+    hakuza matrix       [--save]
 
 All AI calls use cached SYSTEM_PROMPT via ask_claude() / stream_to_console().
 All DB writes use the shared get_db() singleton.
@@ -26,8 +26,8 @@ from rich.text import Text
 from rich.prompt import Confirm
 
 # ---------------------------------------------------------------------------
-# Interfaces imported from the host module at runtime (nexus.py).
-# Declared here only for IDE navigation; the module is run inside nexus's
+# Interfaces imported from the host module at runtime (hakuza.py).
+# Declared here only for IDE navigation; the module is run inside hakuza's
 # namespace so all names are already in scope when these functions execute.
 # ---------------------------------------------------------------------------
 # _require_engagement, get_client, ask_claude, stream_to_console
@@ -130,7 +130,7 @@ def _mark_finding_status(finding_id: str, status: str) -> None:
 
 def cmd_deduplicate(args, console: Console) -> None:
     """
-    nexus deduplicate [--dry-run] [--auto]
+    hakuza deduplicate [--dry-run] [--auto]
 
     Uses AI to find duplicate/overlapping findings and optionally merge them
     by marking duplicates with status='fp'.
@@ -142,7 +142,7 @@ def cmd_deduplicate(args, console: Console) -> None:
     except SystemExit:
         console.print(
             "[red]Anthropic API key required for deduplication.[/red]\n"
-            "[dim]Set it with: nexus config --set api_key=sk-...[/dim]"
+            "[dim]Set it with: hakuza config --set api_key=sk-...[/dim]"
         )
         return
 
@@ -339,7 +339,7 @@ If no duplicates are found, return an empty array: []"""
             f"[bold]Findings marked as duplicate:[/bold] {marked_count}\n"
             f"[bold]Findings kept as primary:[/bold] {kept_count}\n\n"
             f"[dim]Duplicates are now status='fp' (false positive / duplicate).[/dim]\n"
-            f"[dim]Run [bold]nexus findings[/bold] to review the cleaned list.[/dim]",
+            f"[dim]Run [bold]hakuza findings[/bold] to review the cleaned list.[/dim]",
             title="[bold]Deduplication Summary[/bold]",
             border_style="green",
             expand=False,
@@ -384,7 +384,7 @@ def _needs_enrichment(f: dict, mode: str) -> bool:
 
 def cmd_enrich(args, console: Console) -> None:
     """
-    nexus enrich [--all] [--missing-cvss] [--missing-cwe] [--finding <id>]
+    hakuza enrich [--all] [--missing-cvss] [--missing-cwe] [--finding <id>]
 
     Batch AI enrichment of findings missing CVSS/CWE/impact/remediation.
     """
@@ -395,7 +395,7 @@ def cmd_enrich(args, console: Console) -> None:
     except SystemExit:
         console.print(
             "[red]Anthropic API key required for enrichment.[/red]\n"
-            "[dim]Set it with: nexus config --set api_key=sk-...[/dim]"
+            "[dim]Set it with: hakuza config --set api_key=sk-...[/dim]"
         )
         return
 
@@ -562,7 +562,7 @@ def cmd_enrich(args, console: Console) -> None:
     if failed:
         summary_lines.append(f"[bold yellow]Failed (AI parse error):[/bold yellow] {', '.join(failed)}")
     summary_lines.append(
-        "\n[dim]Run [bold]nexus findings --full[/bold] to see enriched details.[/dim]"
+        "\n[dim]Run [bold]hakuza findings --full[/bold] to see enriched details.[/dim]"
     )
 
     console.print(
@@ -595,7 +595,7 @@ _EFFORT_LABEL = {
 
 def cmd_prioritize(args, console: Console) -> None:
     """
-    nexus prioritize [--format table|matrix|timeline] [--bfsi]
+    hakuza prioritize [--format table|matrix|timeline] [--bfsi]
 
     AI-powered remediation prioritization with CVSS, exploitability,
     business impact, effort, and attack-chain potential.
@@ -607,7 +607,7 @@ def cmd_prioritize(args, console: Console) -> None:
     except SystemExit:
         console.print(
             "[red]Anthropic API key required for prioritization.[/red]\n"
-            "[dim]Set it with: nexus config --set api_key=sk-...[/dim]"
+            "[dim]Set it with: hakuza config --set api_key=sk-...[/dim]"
         )
         return
 
@@ -890,7 +890,7 @@ _CHAIN_STYLE = {
 
 def cmd_matrix(args, console: Console) -> None:
     """
-    nexus matrix [--save]
+    hakuza matrix [--save]
 
     Generate a full attack-chain matrix showing which findings can be combined,
     plus the top 3 chains with step-by-step exploitation.
@@ -902,7 +902,7 @@ def cmd_matrix(args, console: Console) -> None:
     except SystemExit:
         console.print(
             "[red]Anthropic API key required for matrix generation.[/red]\n"
-            "[dim]Set it with: nexus config --set api_key=sk-...[/dim]"
+            "[dim]Set it with: hakuza config --set api_key=sk-...[/dim]"
         )
         return
 
@@ -1126,7 +1126,7 @@ def _save_matrix_to_file(
 
     eng_name = eng.get("name", "engagement")
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_dir = Path.home() / ".nexus" / "engagements" / eng_name
+    out_dir = Path.home() / ".hakuza" / "engagements" / eng_name
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"attack_matrix_{ts}.md"
 
@@ -1175,7 +1175,7 @@ def _save_matrix_to_file(
 # ---------------------------------------------------------------------------
 # ARGPARSE REGISTRATION
 # ---------------------------------------------------------------------------
-# To wire these commands into nexus.py's build_parser() and dispatch table,
+# To wire these commands into hakuza.py's build_parser() and dispatch table,
 # add the following snippet inside build_parser() and in the dispatch dict.
 #
 # ── build_parser() additions ────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-NEXUS mod_mobile_cloud.py — Mobile App & Cloud Security Testing Module
+HAKUZA mod_mobile_cloud.py — Mobile App & Cloud Security Testing Module
 Divith D Shetty | CAISP · CRTP | BFSI Specialist
 
 Adds: cmd_mobile, cmd_ios, cmd_cloud, cmd_iot
@@ -8,7 +8,7 @@ Append argparse sub-commands and dispatch entries from bottom of this file.
 """
 
 # ---------------------------------------------------------------------------
-# IMPORTS — uses interfaces already present in nexus.py
+# IMPORTS — uses interfaces already present in hakuza.py
 # ---------------------------------------------------------------------------
 
 import os
@@ -20,7 +20,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-# Rich (all imported in nexus.py globals; imported again so module is self-contained)
+# Rich (all imported in hakuza.py globals; imported again so module is self-contained)
 from rich.console import Console
 from rich.panel import Panel
 from rich.rule import Rule
@@ -37,14 +37,14 @@ from rich import box
 def _require_engagement(console: Console) -> dict:
     """Return current engagement dict or print error and exit."""
     # Import from parent module at call time to avoid circular issues
-    from nexus import get_current_engagement
+    from hakuza import get_current_engagement
     eng = get_current_engagement()
     if not eng:
         console.print(
             Panel(
                 "[red]No active engagement.[/red]\n\n"
                 "Create one first:\n"
-                "  [bold]nexus init <name> --client <client> --target <target> --type mobile[/bold]",
+                "  [bold]hakuza init <name> --client <client> --target <target> --type mobile[/bold]",
                 title="Error",
                 border_style="red",
                 expand=False,
@@ -68,9 +68,9 @@ def _section(console: Console, title: str) -> None:
 
 
 def _offer_finding(console: Console, eng: dict, title: str, severity: str,
-                   description: str, remediation: str, tool: str = "nexus-mobile") -> None:
+                   description: str, remediation: str, tool: str = "hakuza-mobile") -> None:
     """Prompt the tester to add a finding to the engagement DB."""
-    from nexus import add_finding
+    from hakuza import add_finding
     if Confirm.ask(f"\n[yellow]Add '[bold]{title}[/bold]' as a {severity.upper()} finding?[/yellow]", default=False):
         url = Prompt.ask("  URL / identifier", default=eng.get("target", ""))
         evidence = Prompt.ask("  Evidence (paste key line or leave blank)", default="")
@@ -93,13 +93,13 @@ def _offer_finding(console: Console, eng: dict, title: str, severity: str,
 
 def cmd_mobile(args, console: Console) -> None:
     """
-    nexus mobile [--apk <path>] [--package <com.example.app>] [--phase static|dynamic|full]
+    hakuza mobile [--apk <path>] [--package <com.example.app>] [--phase static|dynamic|full]
 
     Android security testing: static analysis, dynamic analysis, OWASP Mobile Top 10.
     """
-    from nexus import (
+    from hakuza import (
         get_client_or_none, get_client, stream_to_console,
-        SYSTEM_PROMPT, NEXUS_DIR, run_tool, ENGAGEMENTS_DIR,
+        SYSTEM_PROMPT, HAKUZA_DIR, run_tool, ENGAGEMENTS_DIR,
     )
 
     eng = _require_engagement(console)
@@ -114,7 +114,7 @@ def cmd_mobile(args, console: Console) -> None:
             f"[bold]APK:[/bold]         {apk_path or '[dim]not provided[/dim]'}\n"
             f"[bold]Package:[/bold]     {package or '[dim]not provided[/dim]'}\n"
             f"[bold]Phase:[/bold]       {phase}",
-            title="[bold cyan]  NEXUS Android Security Testing[/bold cyan]",
+            title="[bold cyan]  HAKUZA Android Security Testing[/bold cyan]",
             border_style="cyan",
             expand=False,
         )
@@ -345,7 +345,7 @@ def cmd_mobile(args, console: Console) -> None:
         description=f"Android mobile security testing initiated for package {package or eng['target']}. "
                     "Static and dynamic analysis checklist reviewed. Follow-up findings to be logged separately.",
         remediation="Follow OWASP MASVS L2 controls. Enforce certificate pinning, disable backup/debug flags.",
-        tool="nexus-mobile",
+        tool="hakuza-mobile",
     )
 
 
@@ -355,11 +355,11 @@ def cmd_mobile(args, console: Console) -> None:
 
 def cmd_ios(args, console: Console) -> None:
     """
-    nexus ios [--ipa <path>] [--bundle <com.example.app>]
+    hakuza ios [--ipa <path>] [--bundle <com.example.app>]
 
     iOS security testing: static analysis, dynamic analysis, OWASP Mobile Top 10.
     """
-    from nexus import get_client_or_none, stream_to_console, run_tool, ENGAGEMENTS_DIR
+    from hakuza import get_client_or_none, stream_to_console, run_tool, ENGAGEMENTS_DIR
 
     eng = _require_engagement(console)
     ipa_path = getattr(args, "ipa", None)
@@ -371,7 +371,7 @@ def cmd_ios(args, console: Console) -> None:
             f"[bold]Target:[/bold]      {eng['target']}\n"
             f"[bold]IPA:[/bold]         {ipa_path or '[dim]not provided[/dim]'}\n"
             f"[bold]Bundle ID:[/bold]   {bundle_id or '[dim]not provided[/dim]'}",
-            title="[bold cyan]  NEXUS iOS Security Testing[/bold cyan]",
+            title="[bold cyan]  HAKUZA iOS Security Testing[/bold cyan]",
             border_style="cyan",
             expand=False,
         )
@@ -515,7 +515,7 @@ def cmd_ios(args, console: Console) -> None:
                     "Static and dynamic analysis checklists reviewed.",
         remediation="Follow OWASP MASVS L2 for iOS. Enable ATS, enforce certificate pinning, "
                     "use Keychain with kSecAttrAccessibleWhenUnlockedThisDeviceOnly.",
-        tool="nexus-ios",
+        tool="hakuza-ios",
     )
 
 
@@ -525,11 +525,11 @@ def cmd_ios(args, console: Console) -> None:
 
 def cmd_cloud(args, console: Console) -> None:
     """
-    nexus cloud [--provider aws|azure|gcp|all] [--target <url_or_account>] [--profile <aws_profile>]
+    hakuza cloud [--provider aws|azure|gcp|all] [--target <url_or_account>] [--profile <aws_profile>]
 
     Cloud security testing: AWS, Azure, GCP attack paths + BFSI compliance.
     """
-    from nexus import get_client_or_none, stream_to_console, run_tool
+    from hakuza import get_client_or_none, stream_to_console, run_tool
 
     eng = _require_engagement(console)
     provider = getattr(args, "provider", "all") or "all"
@@ -542,7 +542,7 @@ def cmd_cloud(args, console: Console) -> None:
             f"[bold]Provider:[/bold]    {provider}\n"
             f"[bold]Target:[/bold]      {target}\n"
             f"[bold]AWS Profile:[/bold] {profile}",
-            title="[bold cyan]  NEXUS Cloud Security Testing[/bold cyan]",
+            title="[bold cyan]  HAKUZA Cloud Security Testing[/bold cyan]",
             border_style="cyan",
             expand=False,
         )
@@ -748,7 +748,7 @@ def cmd_cloud(args, console: Console) -> None:
                     "Attack paths, IAM escalation paths, and BFSI compliance checklist reviewed.",
         remediation="Apply CIS benchmarks for the cloud provider. Enable Security Hub / Defender for Cloud. "
                     "Enforce MFA, encrypt all data at rest, restrict S3/Storage bucket public access.",
-        tool="nexus-cloud",
+        tool="hakuza-cloud",
     )
 
 
@@ -758,11 +758,11 @@ def cmd_cloud(args, console: Console) -> None:
 
 def cmd_iot(args, console: Console) -> None:
     """
-    nexus iot [--target <ip>] [--protocol all|mqtt|rtsp|modbus|snmp]
+    hakuza iot [--target <ip>] [--protocol all|mqtt|rtsp|modbus|snmp]
 
     IoT/OT security testing: protocol-specific checks, default credentials, firmware hints.
     """
-    from nexus import get_client_or_none, stream_to_console, run_tool
+    from hakuza import get_client_or_none, stream_to_console, run_tool
 
     eng = _require_engagement(console)
     target_ip = getattr(args, "target", None) or eng.get("target", "<target-ip>")
@@ -773,7 +773,7 @@ def cmd_iot(args, console: Console) -> None:
             f"[bold]Engagement:[/bold] {eng['name']}  ({eng['client']})\n"
             f"[bold]Target:[/bold]     {target_ip}\n"
             f"[bold]Protocol:[/bold]   {protocol}",
-            title="[bold cyan]  NEXUS IoT/OT Security Testing[/bold cyan]",
+            title="[bold cyan]  HAKUZA IoT/OT Security Testing[/bold cyan]",
             border_style="cyan",
             expand=False,
         )
@@ -786,7 +786,7 @@ def cmd_iot(args, console: Console) -> None:
             "[bold cyan]Unauthenticated broker check[/bold cyan]\n"
             f"  mosquitto_sub -h {target_ip} -p 1883 -t '#' -v   # subscribe to ALL topics\n"
             f"  mosquitto_sub -h {target_ip} -p 1883 -t '$SYS/#' -v  # broker stats\n"
-            f"  mosquitto_pub -h {target_ip} -p 1883 -t 'test' -m 'nexus_probe'\n\n"
+            f"  mosquitto_pub -h {target_ip} -p 1883 -t 'test' -m 'hakuza_probe'\n\n"
             "[bold cyan]Auth bypass attempts[/bold cyan]\n"
             f"  mosquitto_sub -h {target_ip} -u '' -P '' -t '#' -v  # empty creds\n"
             f"  mosquitto_sub -h {target_ip} -u admin -P admin -t '#' -v\n"
@@ -952,7 +952,7 @@ def cmd_iot(args, console: Console) -> None:
         remediation="Change all default credentials. Disable unused protocols (Telnet, SNMPv1). "
                     "Segment IoT devices on isolated VLANs with strict ACLs. Enable encrypted protocols "
                     "(MQTTs, SNMPv3, HTTPS). Implement firmware update process.",
-        tool="nexus-iot",
+        tool="hakuza-iot",
     )
 
 
@@ -999,7 +999,7 @@ def register_mobile_cloud_commands(sub) -> None:
 
 # ---------------------------------------------------------------------------
 # DISPATCH ADDITIONS
-# Merge this dict into the dispatch table in nexus.py main():
+# Merge this dict into the dispatch table in hakuza.py main():
 #
 #   from mod_mobile_cloud import MOBILE_CLOUD_DISPATCH
 #   dispatch.update(MOBILE_CLOUD_DISPATCH)

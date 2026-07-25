@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-NEXUS Assembler — merges base + modules into final nexus.py
-Run from ~/projects/nexus/: python3 assemble.py
+HAKUZA Assembler — merges base + modules into final hakuza.py
+Run from ~/projects/hakuza/: python3 assemble.py
 """
 import re
 import sys
@@ -31,8 +31,8 @@ def blue(s):   return f"{C_BLUE}{s}{C_RESET}"
 # ---------------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------------
-BASE   = Path("nexus.py")
-OUTPUT = Path("nexus.py")          # assembled in-place
+BASE   = Path("hakuza.py")
+OUTPUT = Path("hakuza.py")          # assembled in-place
 
 MODULES = [
     "mod_ad_network.py",
@@ -125,11 +125,11 @@ def strip_shebang(code: str) -> str:
     return "".join(lines)
 
 
-def strip_nexus_interfaces_import(code: str) -> str:
-    """Remove any 'from nexus_interfaces import *' lines."""
+def strip_hakuza_interfaces_import(code: str) -> str:
+    """Remove any 'from hakuza_interfaces import *' lines."""
     out = []
     for line in code.splitlines(keepends=True):
-        if re.match(r"^\s*from\s+nexus_interfaces\s+import\s+", line):
+        if re.match(r"^\s*from\s+hakuza_interfaces\s+import\s+", line):
             continue
         out.append(line)
     return "".join(out)
@@ -175,12 +175,12 @@ def strip_module_docstring(module_code: str, base_header_lines: set) -> str:
         end += 1
 
     doc_content = "".join(lines[start:end])
-    # Check if first meaningful word of the docstring matches known nexus header keywords
-    nexus_keywords = {"NEXUS", "nexus", "Unified Penetration", "penetration testing platform"}
-    if any(kw in doc_content for kw in nexus_keywords):
+    # Check if first meaningful word of the docstring matches known hakuza header keywords
+    hakuza_keywords = {"HAKUZA", "hakuza", "Unified Penetration", "penetration testing platform"}
+    if any(kw in doc_content for kw in hakuza_keywords):
         # Only strip if it really looks like a duplicate header
         module_name_line = doc_content.split("\n")[0].lower()
-        if "nexus" in module_name_line and "mod_" not in module_name_line:
+        if "hakuza" in module_name_line and "mod_" not in module_name_line:
             return "".join(lines[:start] + lines[end:])
 
     return module_code
@@ -390,7 +390,7 @@ def already_has_definition(base_code: str, func_name: str) -> bool:
 
 def assemble():
     print()
-    print(cyan(bold("  NEXUS Assembler")))
+    print(cyan(bold("  HAKUZA Assembler")))
     print(dim("  ─────────────────────────────────"))
     print()
 
@@ -435,7 +435,7 @@ def assemble():
 
         # --- Clean the module code ---
         mod_code = strip_shebang(mod_raw)
-        mod_code = strip_nexus_interfaces_import(mod_code)
+        mod_code = strip_hakuza_interfaces_import(mod_code)
         mod_code = strip_duplicate_imports(mod_code, base_imports)
         mod_code = strip_module_docstring(mod_code, base_header_lines)
 
@@ -512,7 +512,7 @@ def assemble():
     # 6. Print summary report
     # ------------------------------------------------------------------
     print()
-    print(bold(cyan("  NEXUS Assembly Complete")))
+    print(bold(cyan("  HAKUZA Assembly Complete")))
     print(cyan("  " + "═" * 45))
 
     base_orig_lines = BASE.stat().st_size  # already written; use stored count
@@ -533,7 +533,7 @@ def assemble():
             print(f"  {mod_filename:<28} {orig_lines:>5} lines{cmd_part}")
 
     print(f"  {'─' * 47}")
-    print(f"  {'Final nexus.py:':<22} {final_lines} lines")
+    print(f"  {'Final hakuza.py:':<22} {final_lines} lines")
     print(f"  {'New commands:':<22} {total_new_commands} total")
     print(f"  {'Syntax check:':<22} " + (green("OK ✓") if syntax_ok else red("FAILED ✗")))
     print()

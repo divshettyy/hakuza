@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  NEXUS — Live Interview Demo
+#  HAKUZA — Live Interview Demo
 #  Runs a real autopilot pass against scanme.nmap.org, nmap.org's own
 #  public target explicitly maintained for scanning practice — no
 #  authorization concerns, safe to run live in front of an interviewer.
@@ -28,14 +28,14 @@ pause() { printf "\n  ${DIM}${CYAN}[ Press Enter to continue... ]${RESET}"; read
 announce() { printf "  ${BOLD}${YELLOW}▶${RESET}  %s\n\n" "$*"; }
 show_cmd() { printf "  ${BOLD}${GREEN}\$ %s${RESET}\n\n" "$1"; }
 
-DEMO_ENGAGEMENT="nexus-demo-$(date +%s)"
+DEMO_ENGAGEMENT="hakuza-demo-$(date +%s)"
 
 printf "\n"
 divider
-printf "  ${BOLD}${CYAN}NEXUS${RESET} — Unified Penetration Testing Platform ${DIM}v2.0.0${RESET}\n"
+printf "  ${BOLD}${CYAN}HAKUZA${RESET} — Unified Penetration Testing Platform ${DIM}v2.0.0${RESET}\n"
 printf "  ${DIM}Divith D Shetty | CEH · CRTP · CAISP | Powered by Claude${RESET}\n"
 divider
-printf "\n  This demo runs a real, live 'nexus autopilot' pass against\n"
+printf "\n  This demo runs a real, live 'hakuza autopilot' pass against\n"
 printf "  ${BOLD}scanme.nmap.org${RESET} — Nmap's own public target, explicitly kept\n"
 printf "  online for scanning tools to test against. Nothing here is\n"
 printf "  simulated: subfinder, httpx, waybackurls, katana, and nuclei all\n"
@@ -51,26 +51,26 @@ fi
 pause
 
 announce "Step 1 — Create the engagement and define scope"
-show_cmd "nexus init $DEMO_ENGAGEMENT --client 'Interview Demo' --target scanme.nmap.org --type web"
-python3 nexus.py init "$DEMO_ENGAGEMENT" --client "Interview Demo" --target scanme.nmap.org --type web
-show_cmd "nexus scope --add 'http://scanme.nmap.org/*'"
-python3 nexus.py scope --add "http://scanme.nmap.org/*"
+show_cmd "hakuza init $DEMO_ENGAGEMENT --client 'Interview Demo' --target scanme.nmap.org --type web"
+python3 hakuza.py init "$DEMO_ENGAGEMENT" --client "Interview Demo" --target scanme.nmap.org --type web
+show_cmd "hakuza scope --add 'http://scanme.nmap.org/*'"
+python3 hakuza.py scope --add "http://scanme.nmap.org/*"
 pause
 
 announce "Step 2 — Run the full autopilot pipeline, unattended"
 printf "  recon -> wayback -> secrets -> scan -> ${DIM}(AI triage/chain if a key is set)${RESET} -> report\n"
 printf "  ${DIM}(real network I/O — typically 2-5 minutes end to end, mostly the katana crawl)${RESET}\n\n"
-show_cmd "nexus autopilot --profile quick"
-python3 nexus.py autopilot --profile quick
+show_cmd "hakuza autopilot --profile quick"
+python3 hakuza.py autopilot --profile quick
 pause
 
 announce "Step 3 — Review what it found"
-show_cmd "nexus findings"
-python3 nexus.py findings
+show_cmd "hakuza findings"
+python3 hakuza.py findings
 pause
 
 announce "Step 4 — The HTML report it just generated"
-LATEST_HTML=$(find "$HOME/.nexus/engagements/$DEMO_ENGAGEMENT/reports" -name "*.html" -print -quit 2>/dev/null || true)
+LATEST_HTML=$(find "$HOME/.hakuza/engagements/$DEMO_ENGAGEMENT/reports" -name "*.html" -print -quit 2>/dev/null || true)
 if [[ -n "$LATEST_HTML" ]]; then
     printf "  Dark-themed report with an SVG risk gauge, generated deterministically\n"
     printf "  from the DB — no template engine, hand-built SVG + CSS:\n\n"
@@ -82,7 +82,7 @@ fi
 printf "\n"
 divider
 printf "  ${GREEN}Demo complete.${RESET} Engagement '${BOLD}%s${RESET}' and its DB records live in\n" "$DEMO_ENGAGEMENT"
-printf "  ~/.nexus/ — clean up with: ${DIM}nexus list${RESET} to find it, delete its row from\n"
-printf "  ~/.nexus/nexus.db and rm -rf its engagement directory if desired.\n"
+printf "  ~/.hakuza/ — clean up with: ${DIM}hakuza list${RESET} to find it, delete its row from\n"
+printf "  ~/.hakuza/hakuza.db and rm -rf its engagement directory if desired.\n"
 divider
 printf "\n"

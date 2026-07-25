@@ -1,11 +1,11 @@
 """
-mod_dashboard.py — NEXUS Live Dashboard
-Full-screen TUI dashboard for the NEXUS pentest platform.
+mod_dashboard.py — HAKUZA Live Dashboard
+Full-screen TUI dashboard for the HAKUZA pentest platform.
 
-Usage: nexus dashboard [--refresh <seconds>] [--no-ai]
+Usage: hakuza dashboard [--refresh <seconds>] [--no-ai]
 
-Imports everything it needs from the nexus module when used standalone,
-or relies on the shared namespace when imported by nexus.py.
+Imports everything it needs from the hakuza module when used standalone,
+or relies on the shared namespace when imported by hakuza.py.
 """
 
 import shutil
@@ -26,11 +26,11 @@ from rich import box
 from rich.padding import Padding
 
 # ---------------------------------------------------------------------------
-# These names are resolved at call time from the nexus module namespace.
-# When this file is exec'd/imported inside nexus.py they already exist.
+# These names are resolved at call time from the hakuza module namespace.
+# When this file is exec'd/imported inside hakuza.py they already exist.
 # ---------------------------------------------------------------------------
 # _require_engagement, get_client_or_none, list_findings, get_finding_count,
-# get_db, SEVERITY_ORDER, SEV_COLORS, NEXUS_DIR, ENGAGEMENTS_DIR,
+# get_db, SEVERITY_ORDER, SEV_COLORS, HAKUZA_DIR, ENGAGEMENTS_DIR,
 # sev_badge, ask_claude, SYSTEM_PROMPT
 # ---------------------------------------------------------------------------
 
@@ -120,14 +120,14 @@ def _sev_bar(count: int, max_count: int, width: int = 16) -> Text:
 # ---------------------------------------------------------------------------
 
 def _build_header_panel(eng: dict, refresh_count: int) -> Panel:
-    """Top header bar: NEXUS | engagement name | client | LIVE indicator."""
+    """Top header bar: HAKUZA | engagement name | client | LIVE indicator."""
     name = eng.get("name", "unknown")
     client = eng.get("client", "")
     target = eng.get("target", "")
     eng_type = eng.get("type", "web").upper()
 
     t = Text(justify="center")
-    t.append("  NEXUS  ", style="bold cyan on black")
+    t.append("  HAKUZA  ", style="bold cyan on black")
     t.append("  |  ", style="dim white")
     t.append(name, style="bold white")
     t.append("  |  ", style="dim white")
@@ -370,9 +370,9 @@ def _build_next_steps_panel(counts: dict, ai_notes: Optional[str]) -> Panel:
     if counts.get("critical", 0) == 0 and counts.get("high", 0) == 0:
         suggestions.append(("[bold yellow]1.[/bold yellow]", "Run nuclei full profile: nuclei -u <target> -tags cves"))
         suggestions.append(("[bold yellow]2.[/bold yellow]", "Fuzz API endpoints: ffuf -w params.txt -u <url>/FUZZ"))
-    suggestions.append(("[bold cyan]3.[/bold cyan]", "nexus analyze  — AI deep dive on all findings"))
-    suggestions.append(("[bold cyan]4.[/bold cyan]", "nexus report   — generate the pentest report"))
-    suggestions.append(("[bold cyan]5.[/bold cyan]", "nexus chain    — build exploit chains"))
+    suggestions.append(("[bold cyan]3.[/bold cyan]", "hakuza analyze  — AI deep dive on all findings"))
+    suggestions.append(("[bold cyan]4.[/bold cyan]", "hakuza report   — generate the pentest report"))
+    suggestions.append(("[bold cyan]5.[/bold cyan]", "hakuza chain    — build exploit chains"))
 
     content = Text()
     for num, step in suggestions[:5]:
@@ -504,7 +504,7 @@ def _fetch_ai_notes(eng: dict, findings: list, counts: dict, result_holder: list
 
 def cmd_dashboard(args, console: Console) -> None:
     """
-    nexus dashboard [--refresh <seconds>] [--no-ai]
+    hakuza dashboard [--refresh <seconds>] [--no-ai]
 
     Opens a full-screen Rich Live dashboard that auto-refreshes every N seconds
     (default 3).  Press q to quit, r to force refresh, a to trigger AI analysis.
@@ -592,7 +592,7 @@ def cmd_dashboard(args, console: Console) -> None:
                         findings = list_findings(eng["id"])
                         counts = get_finding_count(eng["id"])
                         # Re-fetch engagement in case it was updated
-                        from nexus import get_current_engagement  # noqa: F401 — available in ns
+                        from hakuza import get_current_engagement  # noqa: F401 — available in ns
                         fresh_eng = get_current_engagement()
                         if fresh_eng:
                             eng = fresh_eng
@@ -620,7 +620,7 @@ def cmd_dashboard(args, console: Console) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ARGPARSE ADDITIONS  (add to build_parser() in nexus.py)
+# ARGPARSE ADDITIONS  (add to build_parser() in hakuza.py)
 # ---------------------------------------------------------------------------
 # In build_parser(), inside the sub-commands block, add:
 #
@@ -637,9 +637,9 @@ def cmd_dashboard(args, console: Console) -> None:
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# DISPATCH ADDITION  (add to the dispatch dict in main() in nexus.py)
+# DISPATCH ADDITION  (add to the dispatch dict in main() in hakuza.py)
 # ---------------------------------------------------------------------------
-# Import at top of nexus.py:
+# Import at top of hakuza.py:
 #   from mod_dashboard import cmd_dashboard
 #
 # In the dispatch dict:
