@@ -334,6 +334,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._doc(qs)
             elif path == "/go":
                 self._go(qs)
+            elif path == "/go-filtered":
+                self._go_filtered(qs)
             elif path == "/echo":
                 self._echo(qs)
             elif path == "/api/account":
@@ -404,6 +406,11 @@ class Handler(BaseHTTPRequestHandler):
               &mdash; Path traversal / LFI</li>
           <li><a href="/go?redirect=/product">/go?redirect=/product</a>
               &mdash; Open redirect</li>
+          <li><a href="/go-filtered?redirect=//hakuza-redirect-canary.invalid/x">/go-filtered?redirect=//canary...</a>
+              &mdash; Open redirect, filter-bypass variant (blocks a plain
+              https://evil.com but the filter never even looks at a
+              protocol-relative //evil.com or a userinfo-embedded
+              https://thishost@evil.com payload)</li>
           <li><a href="/echo?msg=hello">/echo?msg=hello</a>
               &mdash; CRLF / HTTP header injection</li>
           <li><a href="/user/1000/profile?tab=1">/user/1000/profile?tab=1</a>
@@ -581,6 +588,30 @@ class Handler(BaseHTTPRequestHandler):
     # unsanitized user input, with no allow-list check.
     def _go(self, qs):
         target = qs.get("redirect", ["/"])[0] or "/"
+        self._send(302, "", extra_headers={"Location": target})
+
+    # -- /go-filtered?redirect= ---------------------------------------------
+    # A real, realistic-looking open-redirect FILTER — not just an absent
+    # one like /go above. Blocks any absolute http(s):// URL that doesn't
+    # start with this app's own host, which correctly stops the plain
+    # "redirect=https://evil.com" attack /go is vulnerable to... but the
+    # filter only ever checks for a literal "http://"/"https://" prefix
+    # before comparing, so it never even looks at a value that doesn't
+    # start with one of those two strings, and it compares the RAW STRING
+    # prefix rather than the URL's actual resolved host. Both are classic,
+    # extremely common real-world open-redirect filter mistakes:
+    # protocol-relative ("//evil.com") sails through because it doesn't
+    # start with "http", and "https://<this-host>@evil.com" sails through
+    # because the STRING literally starts with the trusted host, even
+    # though a browser resolves the actual authority to whatever comes
+    # after the "@".
+    def _go_filtered(self, qs):
+        target = qs.get("redirect", ["/"])[0] or "/"
+        host = self.headers.get("Host", "")
+        if target.startswith("http://") or target.startswith("https://"):
+            if not (target.startswith(f"http://{host}") or target.startswith(f"https://{host}")):
+                self._send(400, _page("Blocked", "<p>Redirect target not allowed.</p>"))
+                return
         self._send(302, "", extra_headers={"Location": target})
 
     # -- /echo?msg= -----------------------------------------------------

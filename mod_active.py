@@ -904,6 +904,28 @@ _SSRF_METADATA_LEAK_RE = re.compile(
 _XML_SHAPED_RE = re.compile(r"^\s*(<\?xml|<[a-zA-Z])")
 
 
+def _redirect_target_host(location):
+    """Extract the effective target host from a Location header value the
+    way a real HTTP client/browser would resolve it — not just plain
+    urlsplit() netloc parsing, which misses a leading-backslash payload
+    entirely (backslash isn't a URL-syntax separator per RFC 3986, but
+    several real browsers historically normalize it to a forward slash
+    before parsing). Also strips userinfo (anything before the last '@')
+    so a payload like 'https://realhost.tld@evil.tld/x' — which some
+    naive redirect filters accept because the STRING literally starts
+    with the trusted host — correctly resolves to the actual attacker
+    host, evil.tld, not realhost.tld. Returns None if the value doesn't
+    parse to a real authority at all (a plain relative path, or the
+    canary string merely appearing as a query-string VALUE rather than
+    the actual redirect target — both correctly not a match)."""
+    if not location:
+        return None
+    netloc = urlsplit(location.replace("\\", "/")).netloc
+    if not netloc:
+        return None
+    return netloc.rsplit("@", 1)[-1].split(":")[0].lower()
+
+
 # ---------------------------------------------------------------------------
 # Per-parameter mutation loop (steps 1-12)
 # ---------------------------------------------------------------------------
@@ -1388,9 +1410,34 @@ def _test_param(ctx, parts, pairs, pname, baseline):
 
     # --- 7. Open redirect (only params whose name suggests a redirect context) ---
     if re.search(r"redirect|url|next|return|dest|continue|goto", pname, re.I):
-        canary_url = "https://hakuza-redirect-canary.invalid/x"
-        url_r = _build_url(parts, _with_param(pairs, pname, canary_url))
-        if not budget.exhausted():
+        canary_host = "hakuza-redirect-canary.invalid"
+        # Beyond a plain absolute-URL payload, try three real, common
+        # allow-list-filter bypass techniques: protocol-relative (many
+        # filters gate on a literal "http"/"https" prefix and don't
+        # realize "//host" is ALSO an absolute redirect target, just
+        # without a scheme — the single most common real-world bypass of
+        # this exact bug class), userinfo-embedded (a filter checking
+        # "does this URL start with our own trusted host" is defeated by
+        # putting the trusted host BEFORE an "@", since an HTTP
+        # client/browser uses whatever comes AFTER the last "@" as the
+        # actual authority), and a backslash variant (some browsers
+        # historically normalize a leading backslash to a forward slash
+        # before parsing, turning "/\host" into the same protocol-
+        # relative shape). All three reuse the exact same "does the
+        # real, non-followed Location header point at our attacker-
+        # controlled canary host" certainty the plain payload already
+        # established — more delivery mechanisms for the same signal,
+        # not a new one.
+        redirect_payloads = [
+            f"https://{canary_host}/x",
+            f"//{canary_host}/x",
+            f"/\\{canary_host}/x",
+            f"{parts.scheme}://{parts.netloc}@{canary_host}/x",
+        ]
+        for payload in redirect_payloads:
+            if budget.exhausted():
+                break
+            url_r = _build_url(parts, _with_param(pairs, pname, payload))
             time.sleep(delay)
             budget.spend()
             try:
@@ -1398,31 +1445,47 @@ def _test_param(ctx, parts, pairs, pname, baseline):
                                       headers=_UA_HEADERS)
             except Exception:
                 resp_r = None
-            if resp_r is not None:
-                loc = resp_r.headers.get("Location", "")
-                if loc.startswith(canary_url):
-                    _persist(
-                        ctx,
-                        title=f"Open Redirect via '{pname}' parameter",
-                        severity="low",
-                        category="Open Redirect",
-                        url=url_r, param=pname, payload=canary_url,
-                        description=(
-                            f"Setting '{pname}' to an attacker-controlled absolute URL caused a "
-                            f"Location header pointing directly at it, confirmed by inspecting the "
-                            f"real (non-followed) HTTP response."
-                        ),
-                        baseline_snippet="N/A (redirect-only check, no body comparison)",
-                        mutated_snippet=f"Location: {loc}",
-                        impact=("Enables convincing phishing redirects and can be chained with "
-                               "OAuth flows for token theft."),
-                        remediation=("Validate redirect targets against an allow-list of relative "
-                                    "paths or known-good domains; never redirect to a raw "
-                                    "user-supplied URL."),
-                        custom_poc_script=_gen_header_poc(
-                            url_r, "Open Redirect", {}, False, "Location", "startswith", canary_url,
-                        ),
-                    )
+            if resp_r is None:
+                continue
+            loc = resp_r.headers.get("Location", "")
+            if _redirect_target_host(loc) == canary_host:
+                is_bypass = payload != redirect_payloads[0]
+                _persist(
+                    ctx,
+                    title=f"Open Redirect via '{pname}' parameter"
+                         + (" (filter-bypass technique)" if is_bypass else ""),
+                    severity="low",
+                    category="Open Redirect",
+                    url=url_r, param=pname, payload=payload,
+                    description=(
+                        f"Setting '{pname}' to {payload!r} caused a Location header "
+                        f"pointing at an attacker-controlled host ({canary_host}), "
+                        f"confirmed by inspecting the real (non-followed) HTTP "
+                        f"response."
+                        + (
+                            " This specific payload is a known allow-list-filter bypass "
+                            "technique, not a plain absolute URL — worth noting "
+                            "specifically if this application has any redirect-target "
+                            "validation at all, since that validation is being "
+                            "defeated here, not simply absent."
+                            if is_bypass else ""
+                        )
+                    ),
+                    baseline_snippet="N/A (redirect-only check, no body comparison)",
+                    mutated_snippet=f"Location: {loc}",
+                    impact=("Enables convincing phishing redirects and can be chained with "
+                           "OAuth flows for token theft."),
+                    remediation=("Validate redirect targets against an allow-list of relative "
+                                "paths or known-good domains — checking only for a literal "
+                                "scheme prefix or a leading trusted-domain substring is not "
+                                "sufficient, as this finding demonstrates; parse the target "
+                                "as a URL and compare its actual resolved host, not the raw "
+                                "string."),
+                    custom_poc_script=_gen_header_poc(
+                        url_r, "Open Redirect", {}, False, "Location", "startswith", payload,
+                    ),
+                )
+                break
 
     if budget.exhausted():
         return
