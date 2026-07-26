@@ -29,6 +29,24 @@ hakuza active "http://127.0.0.1:9911/user/1001/profile?tab=1" --no-ai
 hakuza findings          # everything hakuza active confirmed
 ```
 
+`/order/<uuid>` is a second IDOR endpoint, UUID-keyed instead of sequential — a UUID can't be brute-forced, so testing it exercises a different code path (`mod_active.py`'s real-sibling-ID cross-reference, not the numeric id-1/id+1000 offset logic). It needs the engagement's own recon data seeded with the other real order UUIDs first, simulating a prior `hakuza wayback` run having already discovered them:
+
+```bash
+python3 -c "
+import hakuza
+eng = hakuza.get_engagement('practice-range')
+urls = '\n'.join([
+    'http://127.0.0.1:9911/order/3f2504e0-4f89-4e63-9a0c-0305e82c3301',
+    'http://127.0.0.1:9911/order/7c9e6679-7425-40de-944b-e07fc1f90ae7',
+    'http://127.0.0.1:9911/order/f47ac10b-58cc-4372-a567-0e02b2c3d479',
+])
+hakuza.add_recon_data(eng['id'], 'wayback_urls', urls, 'wayback')
+"
+hakuza active "http://127.0.0.1:9911/order/3f2504e0-4f89-4e63-9a0c-0305e82c3301" --no-ai
+```
+
+Without that seeding step, `hakuza active` correctly refuses to guess a UUID and skips with a one-line explanation instead — that's the intended behavior, not a bug.
+
 Drop `--no-ai` if you have `ANTHROPIC_API_KEY` set and want to see the AI
 escalation path exercised too (it mainly matters for the boolean-blind SQLi
 and IDOR heuristic paths, where the signal is ambiguous enough to ask for a
@@ -43,7 +61,8 @@ second opinion).
 | `/doc?file=` | `file` | Filename is joined onto a base directory with `os.path.join()` and no canonical-path containment check | Path Traversal / LFI (`../../../../etc/passwd`) |
 | `/go?redirect=` | `redirect` | `Location` header is set directly from the parameter, no allow-list | Open Redirect |
 | `/echo?msg=` | `msg` | Value is placed into a custom response header with no CR/LF stripping — `http.server`'s `send_header()` does not validate embedded control characters | CRLF / HTTP Header Injection |
-| `/user/<id>/profile` | path segment | No auth/session check of any kind — whichever numeric ID is in the path gets returned | IDOR heuristic — **confirmed firing, see below** |
+| `/user/<id>/profile` | path segment | No auth/session check of any kind — whichever numeric ID is in the path gets returned | IDOR heuristic (numeric offset path) |
+| `/order/<uuid>` | path segment | Same bug, UUID-keyed instead of sequential | IDOR heuristic (real-sibling cross-reference path — see "Test it" above for the recon-data seeding step it needs) |
 
 ## Fixed: the IDOR heuristic now catches same-template IDORs
 
@@ -82,6 +101,39 @@ realistic case where a real IDOR and simultaneous noise churn (session id
 *and* timestamp both changing at the same time as the swapped username) are
 both present, and the noise is correctly filtered out while the real signal
 still fires.
+
+## UNION-based extraction against `/product?cat=`, and a real bug it found
+
+`hakuza active --depth deep` doesn't stop at confirming `/product?cat=` is
+SQL-injectable — once error-based detection knows the exact vendor, it
+determines column count, finds a visible/reflectable column, and extracts
+real proof: SQLite version, current database, and (critically) the actual
+table names in this database, including `users` — the same table the IDOR
+endpoint's SSNs live in, reachable through a completely different bug.
+
+Building and verifying this against `/product` surfaced a genuine bug in the
+extraction logic itself, not the test fixture: `/product?cat=` reflects the
+raw `cat` value unescaped elsewhere on the page (that's its XSS bug). The
+extraction code's boundary marker (`HKZS...HKZE`) was appearing *twice* in
+the response — once as part of the raw, unevaluated injected payload text
+(the XSS reflection), and once as the genuinely evaluated UNION result. The
+naive first-match search grabbed the raw occurrence, "extracting" the SQL
+syntax itself instead of a real value. Fixed by filtering matches for
+leftover SQL syntax (quotes, `||`, parens) — a real evaluated value never
+contains those; the unevaluated echo always does. Documented in
+`mod_active.py` directly since it's a general correctness property of the
+extraction logic, not something specific to this range — any real target
+that reflects its own SQL-injectable parameter elsewhere on the page (a
+common combination: the same input point being both XSS- and SQLi-vulnerable)
+would have hit the same bug.
+
+Also worth knowing if you're extending `_product`'s error message: it's
+deliberately phrased to say `sqlite3.OperationalError` rather than generic
+"you have an error in your SQL syntax" wording, because the latter is
+MySQL's classic fingerprint text — `hakuza active`'s vendor detection reads
+the error phrasing to pick UNION-extraction syntax, and generic-sounding
+error text will make it (correctly, by its own logic) guess the wrong
+vendor for a backend that isn't actually MySQL.
 
 ## Extending this range
 

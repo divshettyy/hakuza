@@ -60,9 +60,26 @@ _DB.executescript(
     INSERT INTO users VALUES (1000, 'alice',   'alice@example.com',   'REDACTED-000-11-1000');
     INSERT INTO users VALUES (1001, 'bob',     'bob@example.com',     'REDACTED-000-11-1001');
     INSERT INTO users VALUES (2000, 'charlie', 'charlie@example.com', 'REDACTED-000-11-2000');
+
+    CREATE TABLE orders (uuid TEXT PRIMARY KEY, customer TEXT, total REAL, card_last4 TEXT);
+    INSERT INTO orders VALUES ('3f2504e0-4f89-4e63-9a0c-0305e82c3301', 'alice',   142.50, '4242');
+    INSERT INTO orders VALUES ('7c9e6679-7425-40de-944b-e07fc1f90ae7', 'bob',      89.99, '1881');
+    INSERT INTO orders VALUES ('f47ac10b-58cc-4372-a567-0e02b2c3d479', 'charlie', 210.00, '9911');
     """
 )
 _DB.commit()
+
+# UUID-shaped IDs can't be brute-forced (122 bits of randomness) — the only
+# realistic way hakuza active's IDOR heuristic can test them is by
+# cross-referencing OTHER real URLs already discovered in the engagement's
+# own recon data. testlab/README.md documents seeding these three order
+# URLs into a throwaway engagement's wayback_urls recon data before running
+# `hakuza active` against one of them, to exercise that exact code path.
+_ORDER_UUIDS = [
+    "3f2504e0-4f89-4e63-9a0c-0305e82c3301",
+    "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+    "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+]
 
 _DOCS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docs")
 os.makedirs(_DOCS_DIR, exist_ok=True)
@@ -120,6 +137,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._echo(qs)
             elif re.match(r"^/user/\d+/profile$", path):
                 self._profile(path, qs)
+            elif re.match(r"^/order/[0-9a-f-]{36}$", path, re.I):
+                self._order(path)
             else:
                 self._send(404, _page("Not found", "<h1>404</h1><p>No such page.</p>"))
         except Exception as exc:
@@ -145,7 +164,11 @@ class Handler(BaseHTTPRequestHandler):
           <li><a href="/echo?msg=hello">/echo?msg=hello</a>
               &mdash; CRLF / HTTP header injection</li>
           <li><a href="/user/1000/profile?tab=1">/user/1000/profile?tab=1</a>
-              &mdash; IDOR (try /user/1001/profile, /user/2000/profile)</li>
+              &mdash; IDOR, numeric ID (try /user/1001/profile, /user/2000/profile)</li>
+          <li><a href="/order/3f2504e0-4f89-4e63-9a0c-0305e82c3301">/order/&lt;uuid&gt;</a>
+              &mdash; IDOR, UUID-keyed (3 real order UUIDs exist — see testlab/README.md
+              for how to seed them into recon data so hakuza active can cross-reference
+              them instead of guessing)</li>
         </ul>
         """
         self._send(200, _page("HAKUZA Practice Range", body))
@@ -164,12 +187,44 @@ class Handler(BaseHTTPRequestHandler):
             rows = _DB.execute(query).fetchall()
         except sqlite3.Error as e:
             # Real vendor-style error text, reachable via error-based SQLi.
-            error = f"You have an error in your SQL syntax near: {e}"
+            # Real DB error output is typically far more verbose than a bare
+            # message (driver name, query fragment, traceback-style detail)
+            # — matching that realism matters here, since hakuza active's
+            # error-based gate requires a meaningfully different response
+            # length from baseline, not just any error text, to avoid
+            # false-firing on trivial length noise. Kept genuinely
+            # SQLite-flavored (not generic/MySQL-sounding phrasing) so
+            # hakuza active's vendor fingerprinting — which picks UNION
+            # extraction syntax based on the exact wording — correctly
+            # detects "sqlite" and not some other engine this app doesn't
+            # actually run.
+            error = (
+                f"sqlite3.OperationalError: {e} "
+                f"[pysqlite driver, query: {query!r}]"
+            )
 
         # Deliberately vulnerable: cat is reflected into HTML with no
         # escaping at all (reflected XSS).
+        #
+        # Rendering below is defensive about non-numeric/NULL cell values on
+        # purpose: a UNION-based SQLi injects its own row shape into this
+        # query, and a naive f"{price:.2f}" would crash the whole page (a
+        # 500) the moment an injected row's price-position value isn't a
+        # real float. A silently-crashing app would get noticed and patched
+        # fast; a stable one that just renders whatever came back is the
+        # more realistic (and more dangerous) case, and the one worth
+        # testing UNION extraction against.
+        def _cell(v):
+            return html.escape(str(v)) if v is not None else "NULL"
+
+        def _price_cell(v):
+            try:
+                return f"${float(v):.2f}"
+            except (TypeError, ValueError):
+                return _cell(v)
+
         rows_html = "".join(
-            f"<tr><td>{r[0]}</td><td>{html.escape(r[1])}</td><td>${r[2]:.2f}</td></tr>"
+            f"<tr><td>{_cell(r[0])}</td><td>{_cell(r[1])}</td><td>{_price_cell(r[2])}</td></tr>"
             for r in rows
         )
         body = f"""
@@ -257,6 +312,32 @@ class Handler(BaseHTTPRequestHandler):
             f"&mdash; that's the bug.</i></p>"
         )
         self._send(200, _page("Profile", body))
+
+    # -- /order/<uuid> -------------------------------------------------
+    # Same IDOR bug as /user/<id>/profile, but UUID-keyed instead of a
+    # sequential integer — realistic for a well-built app, and a genuine
+    # test case for hakuza active's real-sibling-ID cross-reference logic
+    # rather than its numeric id-1/id+1000 offset logic. Whichever UUID is
+    # in the path gets returned, no ownership check.
+    def _order(self, path):
+        order_uuid = path.split("/")[2].lower()
+        row = _DB.execute(
+            "SELECT customer, total, card_last4 FROM orders WHERE uuid = ?", (order_uuid,)
+        ).fetchone()
+        if row is None:
+            self._send(404, _page("Not found", "<p>No such order.</p>"))
+            return
+        customer, total, card_last4 = row
+        body = (
+            f"<h1>Order for {html.escape(customer)}</h1>"
+            f"<p>Total: ${total:.2f}</p>"
+            f"<p>Card on file: **** **** **** {html.escape(card_last4)}</p>"
+            f"<p><i>No authentication/session check was performed to reach this page "
+            f"&mdash; that's the bug. The UUID can't be brute-forced, but if it's ever "
+            f"been linked to (an email, a receipt page, a support ticket, a crawl), "
+            f"whoever finds that link can pull this order.</i></p>"
+        )
+        self._send(200, _page("Order", body))
 
 
 def main():
