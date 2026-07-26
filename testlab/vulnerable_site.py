@@ -49,6 +49,7 @@ import hmac
 import html
 import json
 import os
+import pickle
 import re
 import socket
 import sqlite3
@@ -386,6 +387,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._dashboard(path)
             elif path == "/dashboard-safe":
                 self._dashboard_safe()
+            elif path == "/loadstate":
+                self._loadstate(qs)
+            elif path == "/loadstate-safe":
+                self._loadstate_safe(qs)
             else:
                 self._send(404, _page("Not found", "<h1>404</h1><p>No such page.</p>"))
         except Exception as exc:
@@ -484,6 +489,12 @@ class Handler(BaseHTTPRequestHandler):
               with /dashboard and returns the same personalized content, marked
               Cache-Control: public &mdash; see also <a href="/dashboard-safe">/dashboard-safe</a>,
               the exact-match-routing negative control)</li>
+          <li><a href="/loadstate?data=gASVLwAAAAAAAAB9lCiMBGNhcnSUXZQojAVpdGVtMZSMBWl0ZW0ylGWMBHVzZXKUjAVndWVzdJR1Lg==">/loadstate?data=&lt;base64 pickle&gt;</a>
+              &mdash; Insecure Deserialization (a real, unmocked pickle.loads() call
+              on client-supplied data &mdash; try <code>hakuza active ... --depth deep</code>
+              to see the timing-based RCE proof; see also
+              <a href="/loadstate-safe?data=eyJjYXJ0IjogWyJpdGVtMSJdfQ==">/loadstate-safe</a>,
+              the json.loads()-based negative control)</li>
         </ul>
         """
         self._send(200, _page("HAKUZA Practice Range", body))
@@ -1160,6 +1171,45 @@ class Handler(BaseHTTPRequestHandler):
         """
         self._send(200, _page("Dashboard (safe)", body),
                    extra_headers={"Cache-Control": "public, max-age=3600"})
+
+    # -- /loadstate?data= -----------------------------------------------------
+    # Real insecure deserialization: a "restore my saved cart/session state
+    # without a real server-side session" feature that hands a
+    # base64-encoded, client-supplied blob straight to pickle.loads() with
+    # zero restriction on what gets reconstructed -- a genuinely common
+    # real-world (if bad) legacy pattern, not contrived. pickle.loads()
+    # will happily call ANY importable callable a crafted __reduce__ names,
+    # which is the entire vulnerability; this handler never sees or checks
+    # that, it just unpickles and renders whatever comes back.
+    def _loadstate(self, qs):
+        data = qs.get("data", [""])[0]
+        if not data:
+            self._send(200, _page("Load State", "<p>Provide ?data=&lt;base64-encoded pickle&gt;.</p>"))
+            return
+        try:
+            padded = data + "=" * (-len(data) % 4)
+            obj = pickle.loads(base64.b64decode(padded))
+            self._send(200, _page("Load State", f"<p>Restored state: {html.escape(str(obj))}</p>"))
+        except Exception as e:
+            self._send(400, _page("Load State", f"<p>Could not restore state: {html.escape(str(e))}</p>"))
+
+    # -- /loadstate-safe?data= -------------------------------------------
+    # Same feature, same page shape, EXCEPT it decodes with json.loads()
+    # instead of pickle.loads() -- JSON can only ever produce inert data
+    # (dicts/lists/strings/numbers/booleans/None), never a live callable
+    # invocation, so there's no __reduce__-equivalent for an attacker to
+    # exploit. Negative control for the deserialization check.
+    def _loadstate_safe(self, qs):
+        data = qs.get("data", [""])[0]
+        if not data:
+            self._send(200, _page("Load State (safe)", "<p>Provide ?data=&lt;base64-encoded JSON&gt;.</p>"))
+            return
+        try:
+            padded = data + "=" * (-len(data) % 4)
+            obj = json.loads(base64.b64decode(padded))
+            self._send(200, _page("Load State (safe)", f"<p>Restored state: {html.escape(str(obj))}</p>"))
+        except Exception as e:
+            self._send(400, _page("Load State (safe)", f"<p>Could not restore state: {html.escape(str(e))}</p>"))
 
     # -- /user/<id>/profile ------------------------------------------------
     # Real IDOR: no session/auth of any kind — whichever numeric ID is in

