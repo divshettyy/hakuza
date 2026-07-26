@@ -81,6 +81,8 @@ second opinion).
 | `/fetch-safe?url=` | — (intentionally not vulnerable) | Same feature, same page shape, except the URL is checked against an http(s)-only scheme allow-list and a host denylist (metadata addresses, loopback, link-local) before ever reaching `urlopen` | Nothing should fire here — negative control for the SSRF check |
 | `/xmlpreview?data=` | `data` | Parses the parameter with lxml's `XMLParser(resolve_entities=True)` — a real, unmocked external-entity resolution (needs `pip install lxml`; see "XXE, and the one dependency this range needed" below) | XXE — a DOCTYPE declaring an entity pointing at `file:///etc/passwd` gets resolved and the real content comes back in the response |
 | `/xmlpreview-safe?data=` | — (intentionally not vulnerable) | Same feature, same page shape, except `resolve_entities=False` (lxml's own default) + `load_dtd=False` | Nothing should fire here — negative control for the XXE check |
+| `/hppdemo?msg=` | `msg` | A real split-validation bug: the blocklist filter reads the FIRST occurrence of a duplicated `msg` parameter, the renderer reads the LAST — genuinely common in production frameworks where different code paths access duplicate params differently | HTTP Parameter Pollution — `?msg=hello&msg=<script>...</script>` (benign first, payload second) bypasses the filter |
+| `/hppdemo-safe?msg=` | — (intentionally not vulnerable) | Same feature, same page shape, except both the filter and the renderer consistently use the same (first) occurrence | Nothing should fire here — negative control for the HPP check |
 
 ## Fixed: the IDOR heuristic now catches same-template IDORs
 
@@ -453,6 +455,50 @@ shipping an unverified change to shared SQL-injection extraction code fails
 this session's own "make no mistakes" brief. Left out, matching this file's
 existing MSSQL precedent (`tables_query: None`, honestly "not implemented,"
 rather than a guess presented as working).
+
+## HTTP Parameter Pollution, and why the bypass needed both orderings
+
+A real, OWASP-recognized class with zero prior coverage, and the cleanest
+possible architectural fit of anything added so far: no new request
+capability needed at all, since `_build_url` already builds a URL from a
+plain list of `(key, value)` pairs and never deduplicated them — sending
+the same parameter name twice was already representable, just never
+exercised.
+
+Gated to run only as a *fallback*: the new check fires immediately after
+the existing plain single-value reflected-XSS probe, and only if that
+probe did **not** already confirm the same signal directly. Sends the
+target parameter twice in one request — once with a benign placeholder,
+once with a working `<script>` payload — in both orderings (benign-then-
+payload, payload-then-benign), because real backends genuinely disagree
+about which occurrence of a duplicated parameter is authoritative (PHP's
+`$_GET` uses the *last* occurrence by default; many WAFs and framework-
+level validators only ever inspect the *first*). This isn't a new
+detection signal — it reuses the exact same "genuinely executable,
+unescaped payload present in the live response" certainty the plain
+reflected-XSS check already established, just delivered a different way.
+
+`/hppdemo?msg=` demonstrates a real, common split-validation pattern: the
+blocklist filter reads `qs["msg"][0]` (the first occurrence), the
+renderer reads `qs["msg"][-1]` (the last) — two different pieces of code
+each reasonably picking *an* occurrence, just not the *same* one.
+Confirmed directly via curl before trusting the live detector that only
+**one** ordering (benign first, payload second) actually bypasses this
+particular endpoint — `?msg=hello&msg=<script>...</script>` slips through
+(filter checks "hello", passes; page renders the script tag), while
+`?msg=<script>...</script>&msg=hello` is correctly still blocked (filter
+checks the script tag first). That asymmetry is exactly why the check
+tries both orderings rather than one: a single-ordering test would have
+had roughly even odds of missing this exact, realistic bug shape
+entirely.
+
+Caught and fixed a real bug in the check's own first draft before it
+ever ran live, not found in production: the success branch originally
+used `return`, which would have silently skipped every later step (SQLi,
+SSTI, path traversal, and everything else `_test_param` still needed to
+try on that same parameter) — the identical bug class an earlier audit
+round already caught once, in NoSQLi's own step 9 (`return` instead of
+`break`). Fixed to `break` before compiling, let alone committing.
 
 ## Extending this range
 
