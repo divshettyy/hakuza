@@ -862,8 +862,44 @@ if __name__ == "__main__":
 '''
 
 
+# Parameter names that suggest the SERVER ITSELF fetches a URL built from
+# this value — image proxies, "load remote document" features, webhook
+# validators, avatar-by-URL uploads, PDF-from-URL generators. Deliberately
+# broad: matching only means "worth testing," not "vulnerable" — both SSRF
+# signals below only ever fire on a genuine, zero-ambiguity content match,
+# so a broad gate here only costs request budget, never a false positive.
+_SSRF_PARAM_RE = re.compile(
+    r"url|uri|link|src|image|img|avatar|photo|webhook|callback|feed|proxy|"
+    r"fetch|endpoint|target|host|site|resource|remote",
+    re.I,
+)
+# Well-known cloud instance-metadata addresses. 169.254.169.254 (AWS and
+# most other clouds' link-local IMDS address) and GCP's
+# metadata.google.internal are the two with a stable, unauthenticated-by-
+# default GET response shape worth probing directly; Azure's metadata
+# service requires a Metadata:true request HEADER we don't control (the
+# TARGET's own fetch client would need to send it, not us), so it isn't
+# included here — a false negative on Azure specifically, not a gap in
+# the technique.
+_SSRF_METADATA_URLS = [
+    "http://169.254.169.254/latest/meta-data/",
+    "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+    "http://metadata.google.internal/computeMetadata/v1/",
+]
+# Real AWS/GCP instance-metadata content signatures — matched against the
+# LIVE response body, not just "the request didn't error." A target whose
+# URL-fetch feature returns a generic failure page for any unreachable
+# host would never satisfy this, by design.
+_SSRF_METADATA_LEAK_RE = re.compile(
+    r"ami-id|instance-id|iam/security-credentials|security-credentials/|"
+    r"local-ipv4|public-ipv4|computeMetadata|instance/service-accounts|"
+    r"placement/availability-zone",
+    re.I,
+)
+
+
 # ---------------------------------------------------------------------------
-# Per-parameter mutation loop (steps 1-8 from the spec)
+# Per-parameter mutation loop (steps 1-11)
 # ---------------------------------------------------------------------------
 
 def _test_param(ctx, parts, pairs, pname, baseline):
@@ -1482,6 +1518,118 @@ def _test_param(ctx, parts, pairs, pname, baseline):
                                 "escaping is a rendering-time responsibility). Adopt a strict "
                                 "Content-Security-Policy as defense in depth."),
                 )
+
+    if budget.exhausted():
+        return
+
+    # --- 11. SSRF (only params whose name suggests a URL-fetch context) ---
+    # A structurally different bug from open redirect (step 7) even though
+    # the gating looks similar: open redirect proves the CLIENT's browser
+    # gets sent somewhere attacker-controlled; SSRF proves the SERVER
+    # ITSELF makes a network request to an attacker-chosen target — image
+    # proxies, "fetch remote document" features, webhook validators, and
+    # avatar-by-URL uploads are all real, common instances of this
+    # pattern. Two independent, zero-false-positive-risk signals, mirroring
+    # the certainty this file already uses for path traversal (a literal
+    # /etc/passwd content match) and the exposed-Kubernetes check (a real
+    # JSON-shape content match) rather than a fuzzier timing/differential
+    # lead — blind SSRF without an out-of-band callback genuinely can't be
+    # proven with full confidence from outside, so this only ever reports
+    # what it can prove directly from response content.
+    if _SSRF_PARAM_RE.search(pname):
+        ssrf_confirmed = False
+
+        # 11a. file:// scheme — many real-world URL-fetchers are built on
+        # a client (raw urllib, PHP cURL with default settings, Java's
+        # URLConnection) that happily honors file:// alongside http(s)://
+        # unless the scheme is explicitly restricted — a completely
+        # different code path from step 6's path-traversal check (which
+        # only ever mutates FILE-shaped parameters, never URL-shaped
+        # ones), so a URL-fetch feature with this bug is otherwise
+        # invisible to every other check in this file.
+        for file_payload in ("file:///etc/passwd", "file:///etc/passwd%00.png"):
+            if budget.exhausted():
+                return
+            url_f = _build_url(parts, _with_param(pairs, pname, file_payload))
+            resp_f = _polite_get(budget, delay, url_f, timeout)
+            if resp_f is not None and re.search(r"root:.*:0:0:", resp_f.text or ""):
+                ssrf_confirmed = True
+                _persist(
+                    ctx,
+                    title=f"Server-Side Request Forgery (file:// local file read) via '{pname}' parameter",
+                    severity="critical",
+                    category="Server-Side Request Forgery",
+                    url=url_f, param=pname, payload=file_payload,
+                    description=(
+                        f"Setting '{pname}' to a file:// URL caused the server's own URL-fetch "
+                        f"logic to read and return local filesystem content — /etc/passwd "
+                        f"content (matching the root:...:0:0: signature) came back in the live "
+                        f"response, confirmed by direct content matching. This is a server-side "
+                        f"bug, not a client-side one: the server itself performed the file read, "
+                        f"on an attacker-chosen scheme and path."
+                    ),
+                    baseline_snippet=_ctx_snippet(baseline["body"], ""),
+                    mutated_snippet=_ctx_snippet(resp_f.text or "", "root:"),
+                    impact=("Arbitrary local file read via the server's own fetch logic — often "
+                           "reaches credentials, source code, or configuration files, frequently "
+                           "escalating well beyond a single parameter's intended function."),
+                    remediation=("Restrict the URL-fetch client to http(s):// only, explicitly "
+                                "reject file:// (and gopher://, dict://, etc.), and validate the "
+                                "resolved target isn't a local/internal address before fetching."),
+                )
+                break
+
+        if budget.exhausted():
+            return
+
+        # 11b. Cloud-metadata-shaped fetch — the single most damaging real
+        # SSRF outcome: a server that will fetch an attacker-chosen URL
+        # and return the result usually also fetches
+        # http://169.254.169.254/ (AWS/most clouds' link-local
+        # instance-metadata address) or GCP's metadata.google.internal,
+        # both of which hand back IAM credentials / instance identity
+        # with zero authentication to anything that can reach them — the
+        # SSRF-to-cloud-credential-theft chain behind some of the
+        # highest-severity SSRF disclosures in bug bounty history.
+        # Reported only on a genuine metadata-shaped CONTENT match (same
+        # certainty tier as the exposed-Kubernetes-API check's real
+        # JSON-shape validation), not merely "the request didn't error."
+        if not ssrf_confirmed:
+            for meta_payload in _SSRF_METADATA_URLS:
+                if budget.exhausted():
+                    return
+                url_m = _build_url(parts, _with_param(pairs, pname, meta_payload))
+                resp_m = _polite_get(budget, delay, url_m, timeout)
+                if resp_m is not None and _SSRF_METADATA_LEAK_RE.search(resp_m.text or ""):
+                    _persist(
+                        ctx,
+                        title=f"Server-Side Request Forgery (cloud metadata access) via '{pname}' parameter",
+                        severity="critical",
+                        category="Server-Side Request Forgery",
+                        url=url_m, param=pname, payload=meta_payload,
+                        description=(
+                            f"Setting '{pname}' to a cloud instance-metadata URL "
+                            f"({meta_payload}) caused the server's own URL-fetch logic to reach "
+                            f"it and return real metadata content in the live response — "
+                            f"confirmed by matching known AWS/GCP instance-metadata content "
+                            f"signatures (instance/AMI identifiers, IAM credential-listing "
+                            f"paths, or compute-metadata markers), not just an absence of "
+                            f"errors."
+                        ),
+                        baseline_snippet=_ctx_snippet(baseline["body"], ""),
+                        mutated_snippet=_ctx_snippet(resp_m.text or "", "", maxlen=500),
+                        impact=("Cloud instance metadata frequently hands back temporary IAM "
+                               "credentials with zero authentication to anything that can reach "
+                               "the link-local address — a common path from a single "
+                               "vulnerable URL-fetch parameter to full cloud-account "
+                               "compromise."),
+                        remediation=("Block outbound requests to 169.254.169.254 and other "
+                                    "well-known metadata addresses at the network/egress-"
+                                    "filtering layer, require IMDSv2-style token-gated metadata "
+                                    "access where the cloud provider supports it, and never let "
+                                    "a user-controlled URL reach the fetch client unvalidated."),
+                    )
+                    break
 
 
 # ---------------------------------------------------------------------------

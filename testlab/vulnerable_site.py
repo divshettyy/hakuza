@@ -45,7 +45,9 @@ import sqlite3
 import sys
 import threading
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # ---------------------------------------------------------------------------
@@ -344,6 +346,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._domxss(qs)
             elif path == "/domxss-safe":
                 self._domxss_safe(qs)
+            elif path == "/fetch":
+                self._fetch(qs)
+            elif path == "/fetch-safe":
+                self._fetch_safe(qs)
             elif re.match(r"^/user/\d+/profile$", path):
                 self._profile(path, qs)
             elif re.match(r"^/order/[0-9a-f-]{36}$", path, re.I):
@@ -411,6 +417,14 @@ class Handler(BaseHTTPRequestHandler):
               both entirely client-side &mdash; the fragment vector never even reaches
               this server; see also <a href="/domxss-safe">/domxss-safe</a>, the
               non-vulnerable textContent-based negative control)</li>
+          <li><a href="/fetch?url=file:///etc/passwd">/fetch?url=file:///etc/passwd</a>
+              &mdash; SSRF, local file read via file:// scheme (a real "fetch remote
+              resource" feature built on urllib, which honors file:// same as PHP
+              cURL's default settings do) &mdash; also try
+              <a href="/fetch?url=http://169.254.169.254/latest/meta-data/">/fetch?url=http://169.254.169.254/latest/meta-data/</a>
+              for the cloud-metadata-credential-theft variant; see also
+              <a href="/fetch-safe?url=http://example.com/">/fetch-safe</a>, the
+              scheme/host-allowlisted negative control)</li>
         </ul>
         """
         self._send(200, _page("HAKUZA Practice Range", body))
@@ -829,6 +843,95 @@ class Handler(BaseHTTPRequestHandler):
         </script>
         """
         self._send(200, _page("DOM XSS demo (safe variant)", body))
+
+    # -- /fetch?url= --------------------------------------------------------
+    # Real SSRF: a "load a remote image/document" style feature that hands
+    # a user-controlled URL straight to urllib.request.urlopen with zero
+    # scheme or host validation. Genuinely vulnerable two ways:
+    #
+    #   1. file:// scheme. urllib honors it same as PHP cURL's default
+    #      settings do (a very common real-world pattern) -- an attacker
+    #      can read local files through a feature that was only ever meant
+    #      to fetch remote http(s) content.
+    #   2. Arbitrary http(s):// host, including cloud instance-metadata
+    #      addresses. 169.254.169.254 and metadata.google.internal aren't
+    #      routable/bindable in this sandbox, so those two hosts are
+    #      special-cased below to return realistic canned IMDS-shaped
+    #      content directly -- honest about the one thing that can't be
+    #      reproduced outside real cloud infra (same tradeoff already
+    #      documented for the /api/v1/pods Kubernetes demo), while every
+    #      OTHER host, and the file:// path, perform a real, unmocked
+    #      urlopen() call. Point this at http://127.0.0.1:<this-port>/
+    #      to see it fetch its own index page for a fully real end-to-end
+    #      demonstration with no mocking involved at all.
+    _SSRF_METADATA_HOSTS = {
+        "169.254.169.254": (
+            "ami-id: ami-0abcdef1234567890\n"
+            "instance-id: i-0a1b2c3d4e5f67890\n"
+            "instance-type: m5.large\n"
+            "local-ipv4: 10.0.1.42\n"
+            "public-ipv4: 203.0.113.42\n"
+            "iam/security-credentials/\n"
+            "iam/security-credentials/prod-app-role\n"
+            "placement/availability-zone: us-east-1a\n"
+        ),
+        "metadata.google.internal": (
+            '{"computeMetadata": "v1", "instance": {"id": "5555555555555555", '
+            '"hostname": "prod-app.c.demo-project.internal", '
+            '"serviceAccounts": {"default": {"email": "demo@demo-project.iam.gserviceaccount.com"}}}}'
+        ),
+    }
+
+    def _fetch(self, qs):
+        url = qs.get("url", [""])[0]
+        if not url:
+            self._send(400, _page("Fetch", "<p>Missing url parameter.</p>"))
+            return
+        parsed = urllib.parse.urlsplit(url)
+        canned = self._SSRF_METADATA_HOSTS.get(parsed.hostname or "")
+        if canned is not None:
+            self._send(200, _page("Fetch result", f"<pre>{html.escape(canned)}</pre>"))
+            return
+        try:
+            # No scheme/host allow-list at all -- the entire bug. A real
+            # deployment of this pattern is usually built on a client that
+            # defaults to honoring file:// (PHP cURL) or that never
+            # restricts destination hosts (raw urllib, as here).
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                content = resp.read(8192).decode("utf-8", errors="replace")
+            self._send(200, _page("Fetch result", f"<pre>{html.escape(content)}</pre>"))
+        except (urllib.error.URLError, ValueError, OSError) as e:
+            self._send(502, _page("Fetch failed", f"<p>Could not fetch that URL: {html.escape(str(e))}</p>"))
+
+    # -- /fetch-safe?url= ----------------------------------------------------
+    # Same feature, structurally identical page, EXCEPT the URL is checked
+    # against an http(s)-only scheme allow-list and a small host denylist
+    # (metadata addresses, loopback, link-local) before ever reaching
+    # urlopen -- inert by construction, not by luck. Negative-test control
+    # for the SSRF check, same role /domxss-safe plays for DOM-XSS.
+    _SSRF_BLOCKED_HOSTS = {
+        "169.254.169.254", "metadata.google.internal", "localhost",
+        "127.0.0.1", "0.0.0.0", "::1",
+    }
+
+    def _fetch_safe(self, qs):
+        url = qs.get("url", [""])[0]
+        if not url:
+            self._send(400, _page("Fetch (safe)", "<p>Missing url parameter.</p>"))
+            return
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme not in ("http", "https"):
+            self._send(400, _page("Fetch (safe)", "<p>Only http/https URLs are allowed.</p>"))
+            return
+        if (parsed.hostname or "") in self._SSRF_BLOCKED_HOSTS:
+            self._send(400, _page("Fetch (safe)", "<p>That host is not allowed.</p>"))
+            return
+        try:
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                content = resp.read(8192).decode("utf-8", errors="replace")
+            self._send(200, _page("Fetch result", f"<pre>{html.escape(content)}</pre>"))
+        except (urllib.error.URLError, ValueError, OSError) as e:
+            self._send(502, _page("Fetch failed", f"<p>Could not fetch that URL: {html.escape(str(e))}</p>"))
 
     # -- /user/<id>/profile ------------------------------------------------
     # Real IDOR: no session/auth of any kind — whichever numeric ID is in
