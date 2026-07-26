@@ -3183,10 +3183,18 @@ def _test_idor_heuristic(ctx, parts, baseline):
 
     if kind == "numeric":
         orig_id = int(orig_id_str)
-        variants = []
-        if orig_id - 1 >= 0:
-            variants.append(str(orig_id - 1))
-        variants.append(str(orig_id + 1000))
+        # A small, bounded spread in BOTH directions rather than a single
+        # -1/+1000 pair — real adjacent records are just as often the
+        # immediately-neighboring ID as a far-off one, and the previous
+        # two-candidate list meant an IDOR one or two records away (the
+        # single most common real-world shape: another user who signed up
+        # right before/after the account under test) had roughly even odds
+        # of being missed entirely. Same "small bounded list, not a spray"
+        # discipline already used for default credentials/JWT weak
+        # secrets/K8s probe paths elsewhere in this file -- still capped at
+        # a handful of requests, still exits on the first confirmed lead.
+        offsets = (-5, -2, -1, 1, 2, 5, 10, 100, 1000)
+        variants = [str(orig_id + off) for off in offsets if orig_id + off >= 0]
 
         for variant in variants:
             if variant == orig_id_str or budget.exhausted():
