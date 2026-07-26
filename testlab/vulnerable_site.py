@@ -170,6 +170,60 @@ def _jwt_verify(token: str):
     return None
 
 
+# -- kid path-traversal target -------------------------------------------
+# A SEPARATE, differently-vulnerable JWT verifier: instead of one fixed
+# global secret, this one looks the signing key up per-token via the
+# header's own "kid" field — a real, common pattern for multi-key/
+# key-rotation setups — but builds the filesystem path with a naive
+# os.path.join and no containment check. kid="../../../../dev/null"
+# escapes the intended keys/ directory entirely and reads a real,
+# predictable zero-byte file, so signing with an empty-bytes secret
+# forges a valid signature.
+_JWT_KEYS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "jwt_keys")
+os.makedirs(_JWT_KEYS_DIR, exist_ok=True)
+with open(os.path.join(_JWT_KEYS_DIR, "default.key"), "wb") as f:
+    f.write(b"realsigningkey-9f3a2c7e")
+
+
+def _jwt_issue_kid(payload: dict, kid: str = "default.key") -> str:
+    with open(os.path.join(_JWT_KEYS_DIR, kid), "rb") as f:
+        secret = f.read()
+    header = {"alg": "HS256", "typ": "JWT", "kid": kid}
+    h = _b64url_encode(json.dumps(header, separators=(",", ":")).encode())
+    p = _b64url_encode(json.dumps(payload, separators=(",", ":")).encode())
+    sig = hmac.new(secret, f"{h}.{p}".encode(), hashlib.sha256).digest()
+    return f"{h}.{p}.{_b64url_encode(sig)}"
+
+
+def _jwt_verify_kid(token: str):
+    try:
+        parts = token.split(".")
+        if len(parts) != 3:
+            return None
+        header = json.loads(_b64url_decode(parts[0]))
+        payload = json.loads(_b64url_decode(parts[1]))
+    except Exception:
+        return None
+    if header.get("alg") != "HS256":
+        return None
+
+    kid = header.get("kid", "default.key")
+    # Deliberately vulnerable: no os.path.abspath/containment check against
+    # _JWT_KEYS_DIR before opening — this join is the entire bug.
+    key_path = os.path.join(_JWT_KEYS_DIR, kid)
+    try:
+        with open(key_path, "rb") as f:
+            secret = f.read()
+    except OSError:
+        return None
+
+    h, p, s = parts
+    expected = hmac.new(secret, f"{h}.{p}".encode(), hashlib.sha256).digest()
+    if hmac.compare_digest(_b64url_encode(expected), s):
+        return payload
+    return None
+
+
 def _parse_nested_qs(query_string):
     """a[b]=c -> {"a": {"b": "c"}} instead of a flat "a[b]" string key —
     the exact parsing behavior that makes NoSQLi via query string possible."""
@@ -264,6 +318,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._api_profile()
             elif path == "/comments":
                 self._comments(qs)
+            elif path == "/api/kid-token":
+                self._api_kid_token()
+            elif path == "/api/kid-profile":
+                self._api_kid_profile()
             elif re.match(r"^/user/\d+/profile$", path):
                 self._profile(path, qs)
             elif re.match(r"^/order/[0-9a-f-]{36}$", path, re.I):
@@ -315,6 +373,10 @@ class Handler(BaseHTTPRequestHandler):
               &mdash; Stored XSS (a GET-based guestbook &mdash; submit a &lt;script&gt;
               payload once, then any later visit with a DIFFERENT text value still
               renders it, unescaped)</li>
+          <li><a href="/api/kid-token">/api/kid-token</a> &rarr;
+              <a href="/api/kid-profile">/api/kid-profile</a>
+              &mdash; JWT kid header path traversal (naive filesystem key lookup &mdash;
+              try hakuza active .../api/kid-profile --jwt &lt;token&gt;)</li>
         </ul>
         """
         self._send(200, _page("HAKUZA Practice Range", body))
@@ -548,6 +610,27 @@ class Handler(BaseHTTPRequestHandler):
         </form>
         """
         self._send(200, _page("Comments", body))
+
+    # -- /api/kid-token -------------------------------------------------
+    def _api_kid_token(self):
+        token = _jwt_issue_kid({"sub": "alice", "role": "user", "uid": 1000})
+        self._send(200, json.dumps({"token": token}), content_type="application/json")
+
+    # -- /api/kid-profile -------------------------------------------------
+    def _api_kid_profile(self):
+        auth = self.headers.get("Authorization", "")
+        token = auth[7:] if auth.lower().startswith("bearer ") else ""
+        payload = _jwt_verify_kid(token) if token else None
+        if payload is None:
+            self._send(401, json.dumps({"error": "unauthorized"}),
+                       content_type="application/json")
+            return
+        self._send(200, json.dumps({
+            "username": payload.get("sub"),
+            "role": payload.get("role"),
+            "uid": payload.get("uid"),
+            "note": "authenticated profile data (kid-based key lookup)",
+        }), content_type="application/json")
 
     # -- /user/<id>/profile ------------------------------------------------
     # Real IDOR: no session/auth of any kind — whichever numeric ID is in
