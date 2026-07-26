@@ -1,4 +1,4 @@
-name: Jobs Test 1
+name: Jobs Test 2
 
 "on":
   push:
@@ -20,5 +20,27 @@ jobs:
   secrets-scan:
     name: "Secrets · Gitleaks + Trufflehog"
     runs-on: ubuntu-latest
+    steps:
+      - run: echo test
+
+  container-scan:
+    name: "Container · Trivy Image Scan"
+    runs-on: ubuntu-latest
+    if: hashFiles('Dockerfile') != ''
+    steps:
+      - run: echo test
+
+  hakuza-autopilot-scan:
+    name: "HAKUZA · Live Autopilot Run"
+    runs-on: ubuntu-latest
+    if: github.event.inputs.target != ''
+    steps:
+      - run: echo test
+
+  security-gate:
+    name: "Gate · Block on Critical Findings"
+    runs-on: ubuntu-latest
+    needs: [sast, dependency-audit, secrets-scan]
+    if: always()
     steps:
       - run: echo test
