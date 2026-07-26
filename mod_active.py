@@ -1743,6 +1743,93 @@ def _test_race_condition(ctx, target_url, baseline):
 
 
 # ---------------------------------------------------------------------------
+# Default / weak credentials (runs once per target — gated to URLs that
+# look like a login form, i.e. have BOTH a username-shaped and a
+# password-shaped parameter)
+# ---------------------------------------------------------------------------
+#
+# Deliberately a SMALL, bounded list of extremely common default pairs —
+# not a wordlist spray. A real credential-spray/brute-force campaign is a
+# genuinely different risk profile (many more requests, real lockout risk,
+# usually its own dedicated tool with careful rate-limiting policy — this
+# project's own separate ~/tools/otp-brute.py and hydra own that job). This
+# is specifically the "did anyone leave admin/admin enabled" check that's
+# safe, fast, and standard at the start of almost every real assessment.
+# ---------------------------------------------------------------------------
+
+_LOGIN_PARAM_RE = re.compile(r"^(user(name)?|login|email)$", re.I)
+_PASSWORD_PARAM_RE = re.compile(r"^(pass(word)?|pwd)$", re.I)
+
+_DEFAULT_CREDENTIALS = [
+    ("admin", "admin"),
+    ("admin", "password"),
+    ("admin", "admin123"),
+    ("admin", "123456"),
+    ("test", "test"),
+    ("guest", "guest"),
+    ("root", "root"),
+    ("administrator", "administrator"),
+]
+
+
+def _test_default_credentials(ctx, parts, pairs, baseline):
+    param_names = [k for k, _ in pairs]
+    user_param = next((p for p in param_names if _LOGIN_PARAM_RE.match(p)), None)
+    pass_param = next((p for p in param_names if _PASSWORD_PARAM_RE.match(p)), None)
+    if not user_param or not pass_param or user_param == pass_param:
+        return  # doesn't look like a login form — nothing to try credentials against
+
+    budget, delay, timeout = ctx.budget, ctx.delay, ctx.timeout
+    baseline_failed = bool(_FAILURE_INDICATOR_RE.search(baseline["body"]))
+
+    for username, password in _DEFAULT_CREDENTIALS:
+        if budget.exhausted():
+            return
+        new_pairs = []
+        for k, v in pairs:
+            if k == user_param:
+                new_pairs.append((k, username))
+            elif k == pass_param:
+                new_pairs.append((k, password))
+            else:
+                new_pairs.append((k, v))
+
+        url = _build_url(parts, new_pairs)
+        resp = _polite_get(budget, delay, url, timeout)
+        if resp is None:
+            continue
+        body = resp.text or ""
+        if resp.status_code >= 400 or _DENIAL_PHRASE_RE.search(body):
+            continue
+
+        this_failed = bool(_FAILURE_INDICATOR_RE.search(body))
+        if baseline_failed and not this_failed:
+            _persist(
+                ctx,
+                title=f"Default/weak credentials accepted ('{username}' / '{password}')",
+                severity="critical",
+                category="Default Credentials",
+                url=url, param=f"{user_param}/{pass_param}", payload=f"{username}:{password}",
+                description=(
+                    f"Submitting the common default credential pair '{username}'/'{password}' "
+                    f"to this login form produced a response that no longer looks like a "
+                    f"failed-login page, while the baseline request did — consistent with "
+                    f"successful authentication using a default/weak, never-changed "
+                    f"credential, found from a small built-in list of "
+                    f"{len(_DEFAULT_CREDENTIALS)} well-known pairs (not a spray)."
+                ),
+                baseline_snippet=_ctx_snippet(baseline["body"], ""),
+                mutated_snippet=_ctx_snippet(body, ""),
+                impact=("Full account/administrative access using a credential pair that "
+                       "requires no cracking or guessing beyond widely-known defaults."),
+                remediation=("Never ship or deploy with default credentials. Force a "
+                            "credential change on first login, and enforce a minimum "
+                            "password policy that default values can't satisfy."),
+            )
+            return  # one confirmed default-credential pair is enough evidence
+
+
+# ---------------------------------------------------------------------------
 # GraphQL introspection (runs once per target — gated to URLs that look
 # like a GraphQL endpoint)
 # ---------------------------------------------------------------------------
@@ -2552,6 +2639,9 @@ def cmd_active(args, console) -> None:
 
         if not budget.exhausted():
             _test_graphql_introspection(ctx, target_url)
+
+        if not budget.exhausted():
+            _test_default_credentials(ctx, parts, pairs, baseline)
 
     console.print()
     console.print(Panel(

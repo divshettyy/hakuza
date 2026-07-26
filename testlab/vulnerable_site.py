@@ -103,6 +103,15 @@ _LOGIN_USERS = [
     {"username": "admin", "password": "Sup3rS3cret!2026"},
 ]
 
+# -- Default credentials target ------------------------------------------
+# A second, separate login endpoint — this one for a real (depressingly
+# common) bug: an admin panel shipped with its literal default
+# username/password still enabled. /login above intentionally uses a
+# strong password so it does NOT trigger the default-credentials check —
+# that's the correct behavior for a real strong-password endpoint, not a
+# gap in the check.
+_ADMIN_CREDENTIALS = {"username": "admin", "password": "admin"}
+
 # -- Race condition target --------------------------------------------------
 # One redemption available, no lock around the read-check-write sequence —
 # the entire bug. ThreadingHTTPServer runs each request in its own thread,
@@ -310,6 +319,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._api_account()
             elif path == "/login":
                 self._login(parts.query)
+            elif path == "/admin/login":
+                self._admin_login(qs)
             elif path == "/redeem":
                 self._redeem(qs)
             elif path == "/api/token":
@@ -381,6 +392,8 @@ class Handler(BaseHTTPRequestHandler):
               try hakuza active .../api/kid-profile --jwt &lt;token&gt;)</li>
           <li><a href="/graphql?query=%7B__schema%7BqueryType%7Bname%7D%7D%7D">/graphql?query=...</a>
               &mdash; GraphQL introspection enabled for anonymous callers</li>
+          <li><a href="/admin/login?username=guest&password=wrong">/admin/login?username=&amp;password=</a>
+              &mdash; Default credentials (admin/admin, never changed)</li>
         </ul>
         """
         self._send(200, _page("HAKUZA Practice Range", body))
@@ -541,6 +554,23 @@ class Handler(BaseHTTPRequestHandler):
                 ))
                 return
         self._send(200, _page("Login", "<p>Invalid credentials.</p>"))
+
+    # -- /admin/login?username=&password= -------------------------------
+    # Real default-credentials bug: a plain equality check (no NoSQLi,
+    # no other trick — this endpoint exists to demonstrate exactly one
+    # thing in isolation) against a literal, never-changed admin/admin
+    # pair. Depressingly common in the real world.
+    def _admin_login(self, qs):
+        username = qs.get("username", [""])[0]
+        password = qs.get("password", [""])[0]
+        if (username == _ADMIN_CREDENTIALS["username"]
+                and password == _ADMIN_CREDENTIALS["password"]):
+            self._send(200, _page(
+                "Admin Login",
+                "<h1>Welcome, admin!</h1><p>Login successful.</p>",
+            ))
+            return
+        self._send(200, _page("Admin Login", "<p>Invalid credentials.</p>"))
 
     # -- /redeem?code= -------------------------------------------------
     # Real race condition: read-then-write with no lock around a

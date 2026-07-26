@@ -70,6 +70,7 @@ second opinion).
 | `/comments?text=` | `text` | Every submitted comment is appended to a shared, unbounded list and every future page load renders the full history unescaped — a real GET-based guestbook, still a genuine pattern in the wild | Stored XSS — submit `<script>...</script>` once, then any later visit with a *different* `text` value still renders it |
 | `/api/kid-token` → `/api/kid-profile` | `Authorization: Bearer` header | A second, separately-vulnerable JWT verifier — looks the signing key up per-token via the header's own `kid` field (a real key-rotation pattern) with a naive `os.path.join` and no containment check | JWT `kid` path traversal — `kid=../../../../dev/null` signed with an empty-bytes secret is accepted |
 | `/graphql?query=` | `query` | A minimal hand-rolled GraphQL responder that answers the standard introspection query for any anonymous caller, no access check at all | GraphQL Introspection Enabled — leaks 7 real type names including `AdminMutation` and `ResetPassword` |
+| `/admin/login?username=&password=` | `username`, `password` | A plain equality check against a literal, never-changed `admin`/`admin` pair — a separate endpoint from `/login`, which intentionally uses a strong password so it correctly does *not* trigger this check | Default Credentials — `admin`/`admin` accepted |
 
 ## Fixed: the IDOR heuristic now catches same-template IDORs
 
