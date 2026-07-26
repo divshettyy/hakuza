@@ -83,6 +83,8 @@ second opinion).
 | `/xmlpreview-safe?data=` | — (intentionally not vulnerable) | Same feature, same page shape, except `resolve_entities=False` (lxml's own default) + `load_dtd=False` | Nothing should fire here — negative control for the XXE check |
 | `/hppdemo?msg=` | `msg` | A real split-validation bug: the blocklist filter reads the FIRST occurrence of a duplicated `msg` parameter, the renderer reads the LAST — genuinely common in production frameworks where different code paths access duplicate params differently | HTTP Parameter Pollution — `?msg=hello&msg=<script>...</script>` (benign first, payload second) bypasses the filter |
 | `/hppdemo-safe?msg=` | — (intentionally not vulnerable) | Same feature, same page shape, except both the filter and the renderer consistently use the same (first) occurrence | Nothing should fire here — negative control for the HPP check |
+| `/dashboard` (also `/dashboard/*`, `/dashboard;*`) | path (routing, not a query param) | Greedy prefix routing serves the identical personalized page for `/dashboard`, `/dashboard/anything.css`, and `/dashboard;anything.css`, with `Cache-Control: public, max-age=3600` | Web Cache Deception — routing confusion + a cacheable response |
+| `/dashboard-safe` | — (intentionally not vulnerable) | Exact-match routing only — `/dashboard-safe/anything.css` falls through to a real 404 | Nothing should fire here — negative control for the cache-deception check |
 
 ## Fixed: the IDOR heuristic now catches same-template IDORs
 
@@ -499,6 +501,45 @@ SSTI, path traversal, and everything else `_test_param` still needed to
 try on that same parameter) — the identical bug class an earlier audit
 round already caught once, in NoSQLi's own step 9 (`return` instead of
 `break`). Fixed to `break` before compiling, let alone committing.
+
+## Web Cache Deception, and a 95.2%-similarity near-miss caught before it shipped
+
+The newest addition, and a genuinely different mechanism from every other
+check on this range: not an injection, a URL-routing confusion bug (Omer
+Gil's original research, plus the well-known path-parameter/trailing-
+segment variants since). `/dashboard`'s routing greedily matches ANY path
+starting with `/dashboard` — `/dashboard/fake.css`, `/dashboard;fake.css` —
+and serves the identical personalized page regardless, with
+`Cache-Control: public, max-age=3600`. Two things have to be true for this
+to be genuinely exploitable, and the check verifies both rather than
+either alone: the routing confusion itself (proven via response-similarity
+against baseline), and a cache actually willing to store the deceptive
+URL (proven via `Cache-Control`, not just assumed). An explicit
+`no-store`/`private`/`max-age=0` is treated as a real, working safety
+control and silently skipped — not reported at any severity — since
+nearly every real cache respects an explicit directive like that;
+`Cache-Control` absent or ambiguous is reported as an honest lead rather
+than confirmed, since several real CDNs cache by file-extension heuristic
+regardless of origin headers, a detail this tool can't see from outside.
+
+Caught two real mistakes before either ever ran live, not found in
+production. First, the detector's own first draft had a bare
+`console.print(...)` call inside a function that only has `ctx.console`
+in scope — a `NameError` waiting to happen the first time the "lead"
+branch executed, caught on a second read-through before ever running it.
+Second, and more interesting: the testlab demo's own first draft echoed
+the requested path back into the page body (`<p>Requested path:
+{path}</p>`) — meaning the baseline response for `/dashboard` and the
+mutated response for `/dashboard/fake.css` were never quite identical.
+Measured directly: **95.2%** similarity — technically still above the
+detector's 0.95 threshold, but only by a hair, and a real risk of
+false-negativing on the slightest additional real-world variance (a
+timestamp, a request ID, anything else that might legitimately differ
+per request). Fixed by removing the unnecessary echo entirely, so the
+demo response is byte-for-byte identical regardless of path suffix —
+which is also the more realistic shape for a genuine cache-deception
+target in the first place (a page that's supposed to look effectively
+static to a cache, not one that visibly varies per request).
 
 ## Extending this range
 
