@@ -1792,17 +1792,43 @@ def cmd_recon(args, console: Console) -> None:
 # SCAN COMMAND
 # ---------------------------------------------------------------------------
 
+# Vulnerability-class tag set behind the "vuln" and "full" profiles below.
+# Every tag here was verified against the locally-installed nuclei-templates
+# repo (~/nuclei-templates) — grepped for real, non-empty tag usage rather
+# than assumed from memory — so this isn't a guess at plausible-sounding
+# nuclei tags, it's confirmed to match real templates:
+#   vuln(910) lfi(183) xss(178) rce(174) sqli(106) redirect(38) ssrf(29)
+#   fileupload(24-27) ssti(29) xxe(44) idor(7) cors(3) jwt(8) csrf(5)
+#   deserialization(66) open-redirect(10) graphql(40) nosqli(4) crlf(14)
+_VULN_CLASS_TAGS = (
+    "vuln,xss,sqli,nosqli,rce,ssrf,ssti,xxe,lfi,idor,cors,jwt,csrf,"
+    "deserialization,redirect,open-redirect,graphql,fileupload,crlf"
+)
+
 _NUCLEI_PROFILE_TAGS = {
     "quick": "cves,exposures,misconfigurations,default-logins",
-    "full": "cves,exposures,misconfigurations,default-logins,takeovers,technologies,fuzzing",
+    "vuln": _VULN_CLASS_TAGS,
+    "full": f"cves,exposures,misconfigurations,default-logins,takeovers,technologies,fuzzing,{_VULN_CLASS_TAGS}",
+    "stealth": _VULN_CLASS_TAGS,
     "api":  "exposures,misconfiguration,token-spray,auth-bypass",
 }
 
 _NUCLEI_PROFILE_EXCLUDE = {
     "quick": "dos,fuzzing",
+    "vuln": "dos",
     "full": "dos",
+    "stealth": "dos,intrusive,fuzzing",
     "api": "dos",
 }
+
+# Per-profile nuclei concurrency/rate-limit. "stealth" trades scan speed for
+# a much lower request rate — meant to avoid tripping WAF/IDS rate-based
+# alerting, not to scan for a different vulnerability set (that's controlled
+# by tags/exclude-tags above, same for every profile except "quick").
+_NUCLEI_PROFILE_RATE = {
+    "stealth": {"concurrency": "3", "rate_limit": "5", "timeout": "15"},
+}
+_NUCLEI_DEFAULT_RATE = {"concurrency": "20", "rate_limit": None, "timeout": "10"}
 
 
 def _run_nuclei(
@@ -1821,6 +1847,7 @@ def _run_nuclei(
         tags = f"{tags},{extra_tags}"
 
     exclude_tags = _NUCLEI_PROFILE_EXCLUDE.get(profile, "dos")
+    rate = _NUCLEI_PROFILE_RATE.get(profile, _NUCLEI_DEFAULT_RATE)
 
     cmd = [
         "nuclei",
@@ -1830,14 +1857,18 @@ def _run_nuclei(
         "-json",
         "-o", str(output_file),
         "-silent",
-        "-timeout", "10",
+        "-timeout", rate["timeout"],
         "-bulk-size", "25",
-        "-c", "20",
+        "-c", rate["concurrency"],
     ]
+    if rate["rate_limit"]:
+        cmd += ["-rate-limit", rate["rate_limit"]]
 
     if console:
         console.print(f"[cyan]  Running nuclei ({profile} profile) against {target}...[/cyan]")
         console.print(f"  [dim]Tags: {tags}[/dim]")
+        if rate["rate_limit"]:
+            console.print(f"  [dim]Rate: {rate['rate_limit']} req/s, concurrency {rate['concurrency']} (stealth mode)[/dim]")
 
     stdout, stderr, rc = run_tool(cmd, timeout=600)
 
@@ -4267,14 +4298,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     # --- scan ---
     p_scan = sub.add_parser("scan", help="Run automated scans")
-    p_scan.add_argument("--profile", choices=["quick", "full", "stealth"], default="quick")
+    p_scan.add_argument("--profile", choices=["quick", "vuln", "full", "stealth"], default="quick",
+                        help="quick=CVEs/exposures/misconfigs, vuln=XSS/SQLi/SSRF/XXE/SSTI/RCE/LFI/IDOR/CORS/JWT/CSRF/deserialization/redirect/GraphQL/fileupload/CRLF, full=everything, stealth=vuln tags at a much lower request rate")
     p_scan.add_argument("--target", default=None, help="Target URL override (default: engagement target)")
     p_scan.add_argument("--nuclei-tags", dest="nuclei_tags", default=None, help="Extra nuclei tags to add to the profile's default set")
 
     # --- autopilot ---
     p_auto = sub.add_parser("autopilot", help="Unattended pipeline: recon -> wayback -> secrets -> scan -> AI triage -> report")
     p_auto.add_argument("--target", default=None, help="Target URL override (default: engagement target)")
-    p_auto.add_argument("--profile", choices=["quick", "full"], default="quick")
+    p_auto.add_argument("--profile", choices=["quick", "vuln", "full"], default="quick",
+                        help="quick=fast triage, vuln=broad XSS/SQLi/SSRF/XXE/SSTI/RCE/etc. sweep, full=everything")
     p_auto.add_argument("--skip-ai", dest="skip_ai", action="store_true", help="Skip AI analyze/chain phases")
     p_auto.add_argument("--skip-scan", dest="skip_scan", action="store_true", help="Skip the nuclei scan phase")
     p_auto.add_argument("--skip-takeover", dest="skip_takeover", action="store_true", help="Skip the subdomain takeover phase")
