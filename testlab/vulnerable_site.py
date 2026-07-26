@@ -26,6 +26,7 @@ testlab/README.md for the exact commands):
     hakuza active "http://127.0.0.1:9911/go?redirect=" --no-ai
     hakuza active "http://127.0.0.1:9911/echo?msg=hello" --no-ai
     hakuza active "http://127.0.0.1:9911/user/1000/profile?tab=1" --no-ai
+    hakuza active "http://127.0.0.1:9911/domxss?name=x" --no-ai
 
 Or just: hakuza active --all --depth deep   (after `hakuza wayback` /
 manually seeding these URLs into the engagement's recon data — see README).
@@ -339,6 +340,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._graphql(qs)
             elif path in ("/pods", "/api/v1/pods", "/api/v1/namespaces"):
                 self._k8s_pods()
+            elif path == "/domxss":
+                self._domxss(qs)
+            elif path == "/domxss-safe":
+                self._domxss_safe(qs)
             elif re.match(r"^/user/\d+/profile$", path):
                 self._profile(path, qs)
             elif re.match(r"^/order/[0-9a-f-]{36}$", path, re.I):
@@ -401,6 +406,11 @@ class Handler(BaseHTTPRequestHandler):
           <li><a href="/api/v1/pods">/api/v1/pods</a>
               &mdash; Exposed Kubernetes/kubelet API (anonymous-auth enabled &mdash;
               leaks pod env vars including fake DB_PASSWORD/STRIPE_SECRET_KEY)</li>
+          <li><a href="/domxss#&lt;img src=x onerror=alert(1)&gt;">/domxss#&lt;payload&gt;</a>
+              &mdash; DOM-based XSS (location.hash and location.search &rarr; innerHTML,
+              both entirely client-side &mdash; the fragment vector never even reaches
+              this server; see also <a href="/domxss-safe">/domxss-safe</a>, the
+              non-vulnerable textContent-based negative control)</li>
         </ul>
         """
         self._send(200, _page("HAKUZA Practice Range", body))
@@ -739,6 +749,86 @@ class Handler(BaseHTTPRequestHandler):
             ],
         }
         self._send(200, json.dumps(response), content_type="application/json")
+
+    # -- /domxss[?name=] -------------------------------------------------
+    # Real DOM-based XSS. Deliberately different in kind from every other
+    # bug on this range: the SERVER RESPONSE BODY here is byte-for-byte
+    # IDENTICAL no matter what's in the query string or URL fragment — this
+    # handler never reads `qs` at all for the response it sends. Two real,
+    # independent client-side sinks live in the inline <script> below:
+    #
+    #   1. `location.hash` -> innerHTML. A URL fragment (`#...`) is never
+    #      transmitted to the server by the browser at all (per the URL
+    #      spec) — this handler has literally no way to know it was even
+    #      sent. The vulnerability is 100% client-side.
+    #   2. `location.search` (via URLSearchParams) -> innerHTML, read for
+    #      the `name` parameter. The query string DOES reach this handler
+    #      (visible in `qs`, unused on purpose) but the served HTML never
+    #      echoes it — the browser's own JS re-reads it from
+    #      `location.search` at render time and writes it into the DOM
+    #      unescaped. A raw-response-text scanner sees nothing; only a
+    #      real browser that actually runs the JS can find this one.
+    #
+    # Both sinks use .innerHTML with zero sanitization — the entire bug.
+    def _domxss(self, qs):
+        body = """
+        <h1>DOM XSS demo</h1>
+        <p>Two independent, genuinely client-side-only sinks below — the
+        server never sees or echoes either payload; open this page's
+        source (Ctrl+U) and note the query string / fragment are nowhere
+        in it.</p>
+        <div id="hash-output"></div>
+        <div id="query-output"></div>
+        <script>
+          // Sink 1: URL fragment -> innerHTML. Never reaches the server.
+          var hashPayload = location.hash.substring(1);
+          if (hashPayload) {
+            document.getElementById('hash-output').innerHTML =
+                decodeURIComponent(hashPayload);
+          }
+          // Sink 2: query string ("name") -> innerHTML, read client-side.
+          // Reaches the server on the wire, but this served HTML is
+          // static regardless of its value -- the server-side handler
+          // never puts it in the response body.
+          var params = new URLSearchParams(location.search);
+          var namePayload = params.get('name');
+          if (namePayload) {
+            document.getElementById('query-output').innerHTML = namePayload;
+          }
+        </script>
+        """
+        self._send(200, _page("DOM XSS demo", body))
+
+    # -- /domxss-safe[?name=] ---------------------------------------------
+    # Structurally identical page/sinks to /domxss above, EXCEPT both
+    # writes use .textContent instead of .innerHTML — the safe DOM API
+    # that never parses its argument as markup, so an <img onerror=...>
+    # payload just renders as inert literal text, no alert() ever fires.
+    # Exists specifically as a negative-test control: it guards against a
+    # detector that's fooled by surface similarity (page structure, param
+    # names, even the word "innerHTML" appearing in a comment/nearby
+    # script) rather than genuinely proving live JavaScript execution.
+    def _domxss_safe(self, qs):
+        body = """
+        <h1>DOM XSS demo (safe variant)</h1>
+        <p>Same shape as /domxss, but both sinks use .textContent instead
+        of .innerHTML -- inert by construction, not by luck.</p>
+        <div id="hash-output"></div>
+        <div id="query-output"></div>
+        <script>
+          var hashPayload = location.hash.substring(1);
+          if (hashPayload) {
+            document.getElementById('hash-output').textContent =
+                decodeURIComponent(hashPayload);
+          }
+          var params = new URLSearchParams(location.search);
+          var namePayload = params.get('name');
+          if (namePayload) {
+            document.getElementById('query-output').textContent = namePayload;
+          }
+        </script>
+        """
+        self._send(200, _page("DOM XSS demo (safe variant)", body))
 
     # -- /user/<id>/profile ------------------------------------------------
     # Real IDOR: no session/auth of any kind — whichever numeric ID is in

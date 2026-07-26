@@ -173,6 +173,24 @@ except ImportError:
     HAS_ACTIVE_AI = False
 
 
+# ---------------------------------------------------------------------------
+# Optional Playwright integration — real headless-browser JavaScript
+# execution, used ONLY by the DOM-based XSS check below. Every other check
+# in this file works by inspecting raw HTTP response TEXT, which structurally
+# cannot detect DOM XSS (the vulnerable code path never touches the server
+# response at all — e.g. `document.write(location.hash)`). Same graceful-
+# degradation philosophy as HAS_REQUESTS/HAS_ACTIVE_AI above: if Playwright
+# isn't installed, the core diffing engine and every other check still run
+# fully, and the DOM-XSS check just prints a one-line skip notice instead of
+# failing the whole run.
+# ---------------------------------------------------------------------------
+try:
+    from playwright.sync_api import sync_playwright
+    HAS_PLAYWRIGHT = True
+except ImportError:
+    HAS_PLAYWRIGHT = False
+
+
 _UA_HEADERS = {"User-Agent": "Mozilla/5.0 (HAKUZA-Active/2.0; +differential-testing)"}
 
 # ---------------------------------------------------------------------------
@@ -1914,6 +1932,350 @@ def _test_exposed_k8s_api(ctx, target_url):
 
 
 # ---------------------------------------------------------------------------
+# DOM-based XSS (runs once per target) — the one check in this entire file
+# that does NOT work by inspecting raw HTTP response text at all. Every
+# other XSS check above (reflected: step 1 of _test_param; stored: step 10
+# of _test_param) proves its finding by finding an unescaped payload
+# somewhere in the literal bytes of an HTTP response. That structurally
+# cannot detect DOM-based XSS, where the vulnerable code path is entirely
+# client-side JavaScript that reads an attacker-controlled source
+# (location.hash, location.search, document.referrer, ...) and writes it
+# into a dangerous DOM sink (innerHTML, document.write, eval, ...) without
+# ever being echoed by the server at all.
+#
+# This uses a REAL headless Chromium via Playwright — not a simulation —
+# and proves genuine execution (not text matching) the same way
+# webapp/tests/test_e2e.py already proves the ABSENCE of XSS execution for
+# the web dashboard: register a listener for the `dialog` event, which
+# Chromium fires if and only if a live alert()/confirm()/prompt() call
+# actually runs. This check is DOM-XSS's mirror of that same technique,
+# proving PRESENCE instead of absence.
+# ---------------------------------------------------------------------------
+
+_DOM_XSS_SETTLE_MS = 800  # bounded wait after navigation for async DOM writes
+                          # (e.g. code behind a setTimeout/event handler) to
+                          # fire before giving up on this payload — long
+                          # enough for realistic client-side logic, short
+                          # enough that one target with several parameters
+                          # doesn't turn into a multi-minute hang.
+
+
+def _dom_xss_payload(canary):
+    """A <img onerror=...> payload, not a <script> tag. This matters: the
+    DOM spec deliberately does NOT execute a <script> element inserted via
+    innerHTML (or equivalent), so a script-tag payload would silently fail
+    to prove anything about an innerHTML-style sink even when the sink is
+    genuinely vulnerable. An <img> (or <svg onload=...>) element's event
+    handler DOES fire when inserted this way — it's the standard, correct
+    real-world proof payload for innerHTML/document.write-class DOM sinks,
+    not a special trick."""
+    return f"<img src=x onerror=alert('{canary}')>"
+
+
+def _dom_xss_probe(page, url, nav_timeout_ms):
+    """Navigate to `url` in a real Playwright page, listen for a genuine
+    `dialog` event, and return the dialog's message if one fired within
+    the bounded settle window, else None. Any navigation error (DNS
+    failure, connection refused, etc.) is swallowed and treated as "no
+    dialog fired" — a nav failure here means something environment-
+    specific went wrong, not that a vulnerability was disproven; the
+    baseline capture earlier in cmd_active already proved this target
+    responds to plain HTTP."""
+    fired = []
+
+    def _on_dialog(dialog):
+        fired.append(dialog.message)
+        try:
+            dialog.dismiss()
+        except Exception:
+            pass  # page may already be navigating away — nothing to do
+
+    page.on("dialog", _on_dialog)
+    try:
+        page.goto(url, timeout=nav_timeout_ms, wait_until="load")
+        page.wait_for_timeout(_DOM_XSS_SETTLE_MS)
+    except Exception:
+        pass
+    finally:
+        page.remove_listener("dialog", _on_dialog)
+
+    return fired[0] if fired else None
+
+
+def _gen_dom_xss_poc(url, canary, vector_label):
+    """A DOM-XSS finding is proven by real JavaScript execution in a real
+    browser — the generic single-request gen_python_poc() (a plain
+    requests.get() substring check) is MEANINGLESS here, the exact same
+    problem race conditions and HTTP smuggling already hit above (see
+    _gen_race_poc / _gen_smuggling_poc): a finding that isn't reproducible
+    by one plain request needs a PoC that actually re-creates the real
+    mechanism, not a generic template that would just prove the payload
+    sits somewhere in a response body — which was never the point, and for
+    the URL-fragment vector specifically isn't even true (a fragment is
+    never sent to the server at all, so requests.get() can't even
+    construct a meaningful reproduction of that vector).
+    This writes a standalone Playwright script that re-navigates to the
+    exact URL and re-listens for the same live `dialog` event this
+    check's own detector used."""
+    return f'''#!/usr/bin/env python3
+# PoC: DOM-based XSS ({vector_label}) reproduction
+# Target: {url!r}
+# Loads the exact URL in a real headless Chromium and listens for the
+# `dialog` event, which only fires for a genuinely EXECUTING
+# alert()/confirm()/prompt() call — never for inert/escaped text. This is
+# the only way to actually prove a DOM-XSS finding; a plain requests.get()
+# text search cannot, since the vulnerable code path is entirely
+# client-side JavaScript that never has to touch the raw HTTP response
+# body (and, for a URL-fragment vector, never even reaches the server).
+# Run: pip install playwright && python3 -m playwright install chromium
+#      && python3 <this file>
+
+import sys
+from playwright.sync_api import sync_playwright
+
+URL = {url!r}
+EXPECTED_CANARY = {canary!r}
+
+
+def main() -> int:
+    fired = []
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+
+        def handle_dialog(dialog):
+            fired.append(dialog.message)
+            dialog.dismiss()
+
+        page.on("dialog", handle_dialog)
+        try:
+            page.goto(URL, timeout=15000, wait_until="load")
+            page.wait_for_timeout(800)
+        except Exception as exc:
+            print(f"[FAIL] Navigation error: {{exc}}")
+            browser.close()
+            return 1
+        browser.close()
+
+    if fired and EXPECTED_CANARY in fired[0]:
+        print(f"[PASS] DOM XSS reproduced -- live dialog fired: {{fired[0]!r}}")
+        return 0
+    print(f"[FAIL] No matching dialog fired this run (got: {{fired!r}}) -- target may "
+          f"be patched, or timing/environment-sensitive; re-run or raise the settle wait")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+
+def _test_dom_xss(ctx, target_url):
+    """Scope decision: tests the URL FRAGMENT first, unconditionally, on
+    EVERY target regardless of whether it has query parameters — a
+    `#<payload>` fragment is never transmitted to the server at all (per
+    the URL spec, browsers strip it before the request line is even
+    built), so it is invisible to literally every other check this entire
+    tool performs, all of which work over raw HTTP requests/responses.
+    This is arguably the single most valuable capability this check adds:
+    real attack surface nothing else here can reach at all. It then tests
+    each existing query parameter the same way — a DOM sink reading
+    location.search/URLSearchParams is just as real a bug and just as
+    invisible to the reflected/stored XSS checks in _test_param above
+    (those only fire when the SERVER echoes the payload back into the
+    response body verbatim; a client-side `URLSearchParams(location
+    .search).get(...)` read never shows up in the server's response text
+    at all, even though the parameter genuinely reaches the server on the
+    wire this time).
+
+    Resource-cost decision: ONE browser instance is launched and reused
+    for every payload tried against this target (fragment + each query
+    parameter), then closed — not relaunched per-payload. A real Chromium
+    launch is two to three orders of magnitude heavier than a single
+    requests.get() call (a real OS process, a real rendering/JS engine);
+    relaunching per parameter on a URL with several parameters would be a
+    wildly disproportionate cost increase for what is fundamentally still
+    one target. Each navigation still spends one unit of the shared
+    request budget and respects ctx.delay between navigations, same
+    politeness philosophy as every other check in this file.
+
+    No AI escalation here, matching _test_race_condition's reasoning: a
+    live `dialog` firing in a real browser after a payload navigation is
+    about as close to direct proof as this engine gets — there's no
+    ambiguous signal left to hand to a human-judgment call.
+    """
+    if not HAS_PLAYWRIGHT:
+        ctx.console.print(
+            "  [dim]DOM-XSS check skipped — Playwright is not installed "
+            "(pip install playwright && python3 -m playwright install chromium). "
+            "Every other check in this run is unaffected.[/dim]"
+        )
+        return
+    if ctx.budget.exhausted():
+        return
+
+    parts = urlsplit(target_url)
+    pairs = parse_qsl(parts.query, keep_blank_values=True)
+    nav_timeout_ms = max(int(ctx.timeout * 1000), 3000)
+
+    # Build the (label, url, param-name, payload, canary) tuples to try —
+    # fragment always first (see docstring), then one per existing query
+    # parameter. Each gets its own unique canary so a dialog firing can be
+    # matched back to exactly which vector triggered it.
+    to_try = []
+
+    canary_frag = f"hkzdom{secrets.token_hex(5)}"
+    frag_payload = _dom_xss_payload(canary_frag)
+    frag_url = urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query, frag_payload))
+    to_try.append(("URL fragment (location.hash)", frag_url, "(fragment)",
+                   frag_payload, canary_frag))
+
+    # Query-param URLs are built with the fragment explicitly cleared (NOT
+    # via _build_url(parts, ...) directly, which would preserve whatever
+    # fragment `target_url` originally had). Found while verifying this
+    # check against testlab: if the target URL passed on the command line
+    # already carries a payload-shaped fragment (e.g. a user re-testing the
+    # exact URL a previous fragment finding used), that leftover fragment
+    # payload rides along into every query-param navigation too, since it's
+    # a genuinely separate live sink on the same page. Two <img onerror=...>
+    # elements on one page both fire real, independently-async load-failure
+    # events — Chromium doesn't guarantee DOM-insertion-order firing (it
+    # depends on the image "load" scheduler) — so the canary this function
+    # is actually testing for can end up as fired[1] instead of fired[0],
+    # or vice versa, run to run: a real, observed source of flaky
+    # non-determinism, not a hypothetical one. Clearing the fragment here
+    # ensures exactly one live payload per navigation, which is what makes
+    # canary-matching deterministic.
+    parts_no_frag = parts._replace(fragment="")
+    for pname, _orig_val in pairs:
+        canary_p = f"hkzdom{secrets.token_hex(5)}"
+        payload_p = _dom_xss_payload(canary_p)
+        url_p = _build_url(parts_no_frag, _with_param(pairs, pname, payload_p))
+        to_try.append((f"query parameter '{pname}'", url_p, pname, payload_p, canary_p))
+
+    browser = None
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+
+            for label, url, pname, payload, canary in to_try:
+                if ctx.budget.exhausted():
+                    break
+                time.sleep(ctx.delay)
+                ctx.budget.spend()
+
+                fired_message = _dom_xss_probe(page, url, nav_timeout_ms)
+                if fired_message is None or canary not in fired_message:
+                    continue
+
+                is_fragment = pname == "(fragment)"
+                if is_fragment:
+                    description = (
+                        f"Loading this target with a JavaScript-executing payload in the "
+                        f"URL FRAGMENT (`#{payload}`) caused a live alert() to fire in a "
+                        f"real headless Chromium browser — genuine JavaScript execution, "
+                        f"confirmed via Chromium's own `dialog` event, not a text match. "
+                        f"This attack surface is invisible to EVERY OTHER check `hakuza "
+                        f"active` performs: a URL fragment is a purely client-side "
+                        f"construct that browsers never transmit to the server at all, so "
+                        f"no request/response diffing or text-matching of any kind — "
+                        f"including this tool's own reflected/stored XSS checks — can ever "
+                        f"observe it. The vulnerability lives entirely in client-side "
+                        f"JavaScript that reads `location.hash` (or an equivalent "
+                        f"client-side-only source) and writes it into a dangerous DOM sink "
+                        f"(e.g. `innerHTML`, `document.write`) with no sanitization."
+                    )
+                else:
+                    description = (
+                        f"Loading this target with the '{pname}' query parameter set to a "
+                        f"JavaScript-executing payload caused a live alert() to fire in a "
+                        f"real headless Chromium browser — genuine JavaScript execution, "
+                        f"confirmed via Chromium's own `dialog` event, not a text match. "
+                        f"Unlike the reflected/stored XSS checks elsewhere in this tool "
+                        f"(which only detect a vulnerability when the SERVER echoes the "
+                        f"payload back into the raw HTML response body), this payload never "
+                        f"appears anywhere in the server's response text at all — confirm "
+                        f"this yourself by diffing the baseline body against the response "
+                        f"body for this URL, the payload is absent from both. The "
+                        f"vulnerable code path is client-side JavaScript reading the value "
+                        f"directly out of `location.search`/`URLSearchParams` and writing "
+                        f"it into a dangerous DOM sink (e.g. `innerHTML`) with no "
+                        f"sanitization — exactly the class of bug that made this check "
+                        f"necessary in the first place, since every other check in this "
+                        f"tool only ever looks at server response text."
+                    )
+
+                _persist(
+                    ctx,
+                    title=f"DOM-based XSS via {label}",
+                    severity="high",
+                    category="Cross-Site Scripting (DOM-based)",
+                    url=url, param=pname, payload=payload,
+                    description=description,
+                    baseline_snippet=(
+                        "N/A — DOM-based XSS is proven by real JavaScript execution in a "
+                        "headless browser (a live `dialog` event), not by an HTTP "
+                        "response-text diff; there is no meaningful baseline/mutated "
+                        "response-body comparison for this check. See extra_evidence."
+                    ),
+                    mutated_snippet=(
+                        f"Live browser proof: Chromium fired a real alert() dialog after "
+                        f"navigating to the payload URL. Dialog message: {fired_message!r}"
+                    ),
+                    impact=(
+                        "An attacker can execute arbitrary JavaScript in victims' browsers "
+                        "in this site's security context — session hijacking, credential "
+                        "theft, or full account takeover via a crafted link. Because the "
+                        "vulnerable code runs entirely client-side, this class is also "
+                        "unusually resistant to server-side defenses like input validation "
+                        "or a WAF, neither of which ever sees the payload at all when it "
+                        "arrives via the URL fragment."
+                    ),
+                    remediation=(
+                        "Never pass unsanitized data from location.hash, location.search, "
+                        "document.referrer, or any other client-controlled source into a "
+                        "dangerous DOM sink (innerHTML, document.write, eval, "
+                        "setAttribute() with an event-handler/href/src attribute, etc.). "
+                        "Use safe DOM APIs (textContent, safe attribute values) or a "
+                        "sanitization library (e.g. DOMPurify) before writing untrusted "
+                        "data into the DOM. Adopt a strict Content-Security-Policy "
+                        "(specifically script-src without 'unsafe-inline') as defense in "
+                        "depth — CSP is one of the few server-side controls that CAN "
+                        "mitigate DOM XSS, since it constrains what the browser will "
+                        "execute no matter how the payload arrived."
+                    ),
+                    extra_evidence=(
+                        f"Detection mechanism: Playwright (headless Chromium), a real "
+                        f"`dialog` event listener — not a text-match heuristic. Vector: "
+                        f"{label}. Canary: {canary}. "
+                        f"See the generated PoC script for standalone reproduction "
+                        f"(requires: pip install playwright && "
+                        f"python3 -m playwright install chromium)."
+                    ),
+                    custom_poc_script=_gen_dom_xss_poc(url, canary, label),
+                )
+
+            page.close()
+            browser.close()
+            browser = None  # closed cleanly while the driver connection is
+                             # still alive — nothing left for the except
+                             # handler below to clean up on the happy path
+    except Exception as exc:
+        ctx.console.print(f"  [yellow]DOM-XSS check failed to run: {_rich_escape(str(exc))}[/yellow]")
+        # Only reached if launch/navigation raised BEFORE the clean close
+        # above — browser.close() here runs after the `with` block (and its
+        # driver connection) has already unwound, so it's a best-effort
+        # safety net, not the primary cleanup path.
+        if browser is not None:
+            try:
+                browser.close()
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------
 # HTTP Request Smuggling (runs once per target) — the one check in this
 # file that abandons the `requests` library entirely for raw sockets,
 # since smuggling is fundamentally about ambiguous request framing
@@ -2952,6 +3314,9 @@ def cmd_active(args, console) -> None:
 
         if not budget.exhausted():
             _test_exposed_k8s_api(ctx, target_url)
+
+        if not budget.exhausted():
+            _test_dom_xss(ctx, target_url)
 
     console.print()
     console.print(Panel(

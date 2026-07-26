@@ -3,3 +3,6 @@ rich>=13.9.0
 markdown2>=2.5.0
 requests>=2.31.0  # optional for mod_recon_plus.py (degrades to curl subprocess calls without it); HARD-required by `hakuza active` (mod_active.py) — it sends live HTTP requests and has no fallback, so install this
 flask>=3.0.0      # powers `hakuza serve` — the browser-based web dashboard (webapp/)
+playwright>=1.40.0  # optional for `hakuza active`'s DOM-XSS check (mod_active.py) — every
+                    # other check degrades gracefully without it; also requires a one-time
+                    # `python3 -m playwright install chromium` after pip install

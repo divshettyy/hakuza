@@ -75,6 +75,8 @@ second opinion).
 | `/admin/login?username=&password=` | `username`, `password` | A plain equality check against a literal, never-changed `admin`/`admin` pair — a separate endpoint from `/login`, which intentionally uses a strong password so it correctly does *not* trigger this check | Default Credentials — `admin`/`admin` accepted |
 | `http://127.0.0.1:9912/` (separate port, raw sockets) | — | A hand-rolled, byte-level HTTP responder (not `http.server`) that trusts `Content-Length` even when `Transfer-Encoding` is also present, then genuinely blocks on a real `recv()` waiting for bytes that never arrive if the CL-bounded body isn't complete chunked framing | HTTP Request Smuggling (CL.TE) — a real ~5s hang, not a simulated delay |
 | `/api/v1/pods` (also `/pods`, `/api/v1/namespaces`) | — | Real Kubernetes/kubelet API shape (`PodList`, real field structure), anonymous-auth left enabled — the actual bug this demonstrates, container/cluster *escape* itself needs to run from inside a container and isn't something this range (or `hakuza active`, remotely) can demonstrate | Exposed Kubernetes/Kubelet API — leaks pod env vars including fake `DB_PASSWORD`/`STRIPE_SECRET_KEY` |
+| `/domxss` (fragment and `?name=`) | `location.hash`, `location.search` (`name`) — both client-side only | Two independent, zero-sanitization `.innerHTML` sinks in an inline `<script>` block; the served HTML is byte-identical no matter what the query string or fragment contain — the server-side handler never reads `qs` for its response at all | DOM-based XSS — the fragment vector (`#<img src=x onerror=alert(1)>`) never reaches this server in the first place, so it's the one bug on this entire range that only a real-browser check can find; see `/domxss-safe` below for the negative control |
+| `/domxss-safe` (fragment and `?name=`) | — (intentionally not vulnerable) | Structurally identical to `/domxss` — same two sinks, same page shape — except both use `.textContent` instead of `.innerHTML`, inert by construction | Nothing should fire here — a negative control specifically so the DOM-XSS check's real-execution proof (not surface pattern-matching) gets exercised against a true negative, not just a true positive |
 
 ## Fixed: the IDOR heuristic now catches same-template IDORs
 
@@ -262,6 +264,45 @@ active now says so explicitly and skips both checks rather than reporting a
 bypass of nothing. Re-verified both directions: `/api/account` now correctly
 skips with a clear explanation, `/api/profile` still correctly finds both
 real bugs.
+
+## DOM-based XSS, and a real non-determinism bug it surfaced
+
+```bash
+hakuza active "http://127.0.0.1:9911/domxss?name=x" --no-ai
+```
+
+Requires Playwright + a headless Chromium (`pip install playwright &&
+python3 -m playwright install chromium`) — every other check in this file
+degrades gracefully without it, this one just skips with a one-line notice.
+
+`/domxss` was verified as a genuine bug *manually* before ever trusting
+`hakuza active`'s own detector against it: a standalone Playwright script
+navigated to `/domxss#<img src=x onerror=alert('x')>` and
+`/domxss?name=<img src=x onerror=alert('x')>` and confirmed a real `dialog`
+event fired for both, then confirmed the negative control `/domxss-safe`
+produces zero dialogs for the identical payloads on both vectors — only
+after both directions were confirmed by hand was the built-in check trusted.
+
+Building the query-parameter vector surfaced a real, genuinely non-obvious
+bug in the check itself, not the test fixture: `_build_url()` correctly
+preserves a URL's existing fragment when only the query string is being
+mutated — every other check in this file relies on that. But re-testing a
+URL whose fragment *already contains a payload* (exactly what you get by
+copy-pasting the `url` field off a fragment-based DOM-XSS finding this same
+check just persisted, to confirm it) meant every subsequent query-parameter
+navigation for that target carried the OLD fragment payload along for the
+ride as a second, fully independent live sink on the same page load. Two
+`<img onerror=...>` elements both fire genuine, asynchronous image-load-
+failure events, and Chromium does not guarantee they fire in DOM-insertion
+order — confirmed directly: the very first end-to-end run against this
+range showed the query-parameter finding's *own generated PoC* fail to
+reproduce (`fired = ['hkzfrag', 'hkzdomcdf0c18125']` — the unrelated
+fragment canary arrived first, not the canary the PoC was actually checking
+for), a real, observed flake, not a hypothetical one. Fixed by explicitly
+clearing the fragment (`parts._replace(fragment="")`) before building any
+query-parameter test URL, so exactly one live payload exists per
+navigation. Re-verified: the same PoC now reproduces deterministically
+across 5 consecutive standalone runs.
 
 ## Extending this range
 
