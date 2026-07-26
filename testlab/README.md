@@ -65,6 +65,7 @@ second opinion).
 | `/order/<uuid>` | path segment | Same bug, UUID-keyed instead of sequential | IDOR heuristic (real-sibling cross-reference path — see "Test it" above for the recon-data seeding step it needs) |
 | `/api/account` | `Origin` header | The request's own `Origin` is reflected verbatim into `Access-Control-Allow-Origin`, paired with `Access-Control-Allow-Credentials: true` | CORS Misconfiguration |
 | `/login?username=&password=` | `username`, `password` | Query string parsed with bracket notation (`username[$ne]=x` becomes a dict, not a string) and handed unsanitized to a naive "MongoDB-style" matcher | NoSQL Injection — both the per-parameter check (fires on `password` alone, since the baseline `username=admin` already matches for real) and the all-parameters check (the classic bypass: `/login?username[$ne]=x&password[$ne]=x` logs in as admin with no real credentials) |
+| `/redeem?code=` | `code` (path/behavior, not injection) | Read-then-write with no lock around a single-use coupon (1 use available); a 50ms sleep between the availability check and the decrement stands in for the real DB round-trip that creates this exact window in production apps | Race Condition — fire 10 concurrent requests and all 10 redeem successfully instead of 1 |
 
 ## Fixed: the IDOR heuristic now catches same-template IDORs
 

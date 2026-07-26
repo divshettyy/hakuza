@@ -71,6 +71,7 @@ import difflib
 import hashlib
 import secrets
 import statistics
+import concurrent.futures
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, quote
@@ -399,7 +400,7 @@ def _ai_escalate(ctx, vuln_class, param, url, payload, baseline_body, mutated_bo
 
 def _persist(ctx, *, title, severity, category, url, param, payload, description,
              baseline_snippet, mutated_snippet, impact, remediation, ai_reasoning=None,
-             extra_evidence=None):
+             extra_evidence=None, custom_poc_script=None):
     console = ctx.console
 
     evidence_parts = [
@@ -456,12 +457,13 @@ def _persist(ctx, *, title, severity, category, url, param, payload, description
                  f"[{finding['short_id']}] {_rich_escape(title)}")
 
     if ctx.gen_poc:
-        script_src = ""
-        try:
-            script_src = gen_python_poc("GET", url, {}, category, param, payload,
-                                        expected_signal=mutated_snippet[:200])
-        except Exception as e:
-            console.print(f"  [dim]Python PoC generation failed: {_rich_escape(str(e))}[/dim]")
+        script_src = custom_poc_script or ""
+        if not script_src:
+            try:
+                script_src = gen_python_poc("GET", url, {}, category, param, payload,
+                                            expected_signal=mutated_snippet[:200])
+            except Exception as e:
+                console.print(f"  [dim]Python PoC generation failed: {_rich_escape(str(e))}[/dim]")
         if script_src:
             try:
                 artifacts_dir = _n("ENGAGEMENTS_DIR") / ctx.eng["name"] / "artifacts"
@@ -1530,6 +1532,163 @@ def _test_nosqli_all_params(ctx, parts, pairs, baseline):
 
 
 # ---------------------------------------------------------------------------
+# Race conditions (runs once per target — a genuinely different testing
+# model from everything else in this file: concurrent identical requests,
+# not sequential baseline-vs-mutated diffing)
+# ---------------------------------------------------------------------------
+
+_RACE_ACTION_RE = re.compile(
+    r"redeem|claim|apply|checkout|vote|coupon|voucher|consume|withdraw|"
+    r"transfer|purchase|enroll|register|use[-_]?once|one[-_]?time",
+    re.I,
+)
+
+
+def _gen_race_poc(url, n, success_count, denial_or_failure_marker_words):
+    """A race condition CANNOT be reproduced by a single request — the
+    generic single-shot gen_python_poc() would just show one successful
+    redemption (assuming the resource is still available) and prove
+    nothing about the race itself. This writes a dedicated, genuinely
+    concurrent PoC using a real thread pool, so re-running it actually
+    re-demonstrates the double-spend rather than misrepresenting what
+    the finding is."""
+    return f'''#!/usr/bin/env python3
+# PoC: Race Condition reproduction
+# Target: {url!r}
+# Fires {n} identical requests at the same instant via a thread pool and
+# counts how many come back as an unqualified success. Originally observed:
+# {success_count}/{n} succeeded. A properly-fixed endpoint should show at
+# most 1 success on every run of this script.
+# Run: pip install requests && python3 <this file>
+
+import sys
+import concurrent.futures
+import requests
+
+URL = {url!r}
+N = {n}
+FAILURE_MARKERS = {denial_or_failure_marker_words!r}
+
+
+def fire():
+    try:
+        r = requests.get(URL, timeout=15)
+        return r.status_code, r.text
+    except requests.RequestException as exc:
+        return None, str(exc)
+
+
+def looks_like_success(status, body):
+    if status != 200:
+        return False
+    lower = (body or "").lower()
+    return not any(marker in lower for marker in FAILURE_MARKERS)
+
+
+def main() -> int:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=N) as pool:
+        results = list(pool.map(lambda _: fire(), range(N)))
+
+    successes = sum(1 for status, body in results if looks_like_success(status, body))
+    print(f"{{successes}}/{{N}} concurrent requests returned an unqualified success")
+
+    if successes >= 2:
+        print("[PASS] Race condition reproduced — multiple concurrent requests succeeded")
+        return 0
+    print("[FAIL] Only 0-1 succeeded this run — race window may be fixed, or narrower "
+          "than this run happened to hit; try increasing N")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+
+def _test_race_condition(ctx, target_url, baseline):
+    """Only fires on URLs whose path/params look action-shaped (redeem,
+    claim, checkout, ...) — a burst of N concurrent requests is a real cost
+    (N requests all at once, no politeness delay by design, since delaying
+    between them would defeat the entire point of testing for a race
+    window), so it's gated to endpoints where a single-use/limited-resource
+    bug is actually plausible rather than fired at every URL.
+
+    Fires N identical requests at the same instant via a thread pool (not
+    sequentially — sequential requests can't expose a race window at all)
+    and counts how many come back looking like an unqualified success. For
+    a correctly-implemented single-use action, exactly one concurrent
+    request should win and the rest should see the "already used" outcome.
+    Two or more successes is about as close to direct proof as a
+    heuristic-based test gets — no ambiguity to escalate to AI about, this
+    is a demonstrated double-spend, not a suggestive diff."""
+    if not _RACE_ACTION_RE.search(target_url):
+        return
+    budget, timeout = ctx.budget, ctx.timeout
+    n = 10
+    if budget.count + n > budget.max_requests:
+        ctx.console.print(
+            f"  [dim]URL looks action-shaped but the remaining request budget "
+            f"({budget.max_requests - budget.count}) is below the {n} needed for a "
+            f"meaningful concurrent burst — skipping race-condition test.[/dim]"
+        )
+        return
+    budget.spend(n)
+
+    def _fire():
+        try:
+            return requests.get(target_url, timeout=timeout, headers=_UA_HEADERS)
+        except Exception:
+            return None
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=n) as pool:
+        responses = list(pool.map(lambda _: _fire(), range(n)))
+
+    successes = [
+        r for r in responses
+        if r is not None and r.status_code == 200
+        and not _DENIAL_PHRASE_RE.search(r.text or "")
+        and not _FAILURE_INDICATOR_RE.search(r.text or "")
+    ]
+    failed_or_none = n - len(successes)
+
+    if len(successes) >= 2:
+        sample_bodies = "\n---\n".join(_ctx_snippet(r.text or "", "", maxlen=300)
+                                       for r in successes[:3])
+        _persist(
+            ctx,
+            title="Race Condition — single-use action processed multiple times concurrently",
+            severity="high",
+            category="Race Condition",
+            url=target_url, param="(concurrent requests)", payload=f"{n}x simultaneous GET",
+            description=(
+                f"Fired {n} identical requests to this action-shaped URL at the same "
+                f"instant via a thread pool (not sequentially). {len(successes)} of {n} "
+                f"came back with an unqualified-success response ({failed_or_none} did "
+                f"not) — for a correctly-guarded single-use/limited action, at most 1 "
+                f"should ever succeed under concurrent load. This is a real double-spend "
+                f"demonstration, not a suggestive diff: the same limited resource/action "
+                f"was granted more than once in the same instant."
+            ),
+            baseline_snippet=_ctx_snippet(baseline["body"], ""),
+            mutated_snippet=(f"{len(successes)}/{n} concurrent requests succeeded:\n"
+                             f"{sample_bodies}"),
+            impact=("Depending on the endpoint, this can mean a coupon/voucher redeemed "
+                   "multiple times, a balance withdrawn or transferred more than once, "
+                   "a vote or entry counted repeatedly, or a limited-stock item purchased "
+                   "beyond available quantity — direct financial or business-logic impact."),
+            remediation=("Serialize access to the shared resource with a database-level "
+                        "lock or atomic compare-and-swap operation (e.g. an atomic "
+                        "decrement with a WHERE balance > 0 guard), not a read-then-write "
+                        "check performed in application code."),
+            custom_poc_script=_gen_race_poc(
+                target_url, n, len(successes),
+                ["denied", "not authorized", "forbidden", "invalid", "incorrect",
+                 "failed", "already", "no match"],
+            ),
+        )
+
+
+# ---------------------------------------------------------------------------
 # CORS misconfiguration (runs once per target — a response-header property,
 # not a per-parameter injection point)
 # ---------------------------------------------------------------------------
@@ -2003,6 +2162,9 @@ def cmd_active(args, console) -> None:
 
         if not budget.exhausted():
             _test_cors(ctx, target_url)
+
+        if not budget.exhausted():
+            _test_race_condition(ctx, target_url, baseline)
 
     console.print()
     console.print(Panel(

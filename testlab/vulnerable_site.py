@@ -99,6 +99,16 @@ _LOGIN_USERS = [
     {"username": "admin", "password": "Sup3rS3cret!2026"},
 ]
 
+# -- Race condition target --------------------------------------------------
+# One redemption available, no lock around the read-check-write sequence —
+# the entire bug. ThreadingHTTPServer runs each request in its own thread,
+# so N concurrent requests can all read "1 remaining" before any of them
+# writes the decrement. The 50ms sleep between read and write isn't padding
+# for effect — it stands in for the real-world DB/network round-trip that
+# creates this exact window in a real app, widening it enough to reliably
+# demonstrate the race without needing hundreds of requests.
+_COUPON_REMAINING = {"WELCOME10": 1}
+
 
 def _parse_nested_qs(query_string):
     """a[b]=c -> {"a": {"b": "c"}} instead of a flat "a[b]" string key —
@@ -186,6 +196,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._api_account()
             elif path == "/login":
                 self._login(parts.query)
+            elif path == "/redeem":
+                self._redeem(qs)
             elif re.match(r"^/user/\d+/profile$", path):
                 self._profile(path, qs)
             elif re.match(r"^/order/[0-9a-f-]{36}$", path, re.I):
@@ -226,6 +238,9 @@ class Handler(BaseHTTPRequestHandler):
           <li><a href="/login?username=admin&password=wrongpass">/login?username=&amp;password=</a>
               &mdash; NoSQL injection (try /login?username[$ne]=x&amp;password[$ne]=x
               to log in as admin without the real password)</li>
+          <li><a href="/redeem?code=WELCOME10">/redeem?code=WELCOME10</a>
+              &mdash; Race condition (one-time coupon, no lock around the read-check-write
+              sequence &mdash; fire it many times at once and it redeems more than once)</li>
         </ul>
         """
         self._send(200, _page("HAKUZA Practice Range", body))
@@ -386,6 +401,29 @@ class Handler(BaseHTTPRequestHandler):
                 ))
                 return
         self._send(200, _page("Login", "<p>Invalid credentials.</p>"))
+
+    # -- /redeem?code= -------------------------------------------------
+    # Real race condition: read-then-write with no lock around a
+    # single-use resource. Fire this once and it behaves perfectly
+    # (1 success, then "already used" forever after). Fire it N times
+    # concurrently and multiple requests all see the resource as
+    # available before any of them writes the decrement.
+    def _redeem(self, qs):
+        code = qs.get("code", [""])[0]
+        remaining = _COUPON_REMAINING.get(code)
+        if remaining is None:
+            self._send(200, _page("Redeem", "<p>Invalid coupon code.</p>"))
+            return
+        if remaining <= 0:
+            self._send(200, _page("Redeem", "<p>Coupon already used. Sorry!</p>"))
+            return
+        time.sleep(0.05)  # the real-world DB/network round-trip this simulates
+        _COUPON_REMAINING[code] = remaining - 1
+        self._send(200, _page(
+            "Redeem",
+            f"<h1>Success!</h1><p>10% discount applied using code "
+            f"{html.escape(code)}.</p>",
+        ))
 
     # -- /user/<id>/profile ------------------------------------------------
     # Real IDOR: no session/auth of any kind — whichever numeric ID is in
