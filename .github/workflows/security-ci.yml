@@ -6,11 +6,11 @@ name: Security CI Pipeline
 # itself in CI).
 # Built by Divith D Shetty | CEH · CRTP · CAISP
 
-on:
+"on":
   push:
-    branches: [main, develop]
+    branches: [master, main, develop]
   pull_request:
-    branches: [main]
+    branches: [master, main]
   schedule:
     # Nightly dependency audit at 02:00 UTC
     - cron: "0 2 * * *"
