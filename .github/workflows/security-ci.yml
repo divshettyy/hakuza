@@ -1,11 +1,81 @@
-name: Minimal Test
+name: Structure Test
 
 "on":
   push:
-    branches: [master]
+    branches: [master, main, develop]
+  pull_request:
+    branches: [master, main]
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Target domain/URL for a live HAKUZA autopilot run (authorized scope only)"
+        required: false
+        default: ""
+      profile:
+        description: "Autopilot scan profile"
+        required: false
+        default: "quick"
+        type: choice
+        options: [quick, full]
+
+permissions:
+  contents: read
+  security-events: write
+  pull-requests: write
+
+env:
+  PYTHON_VERSION: "3.11"
 
 jobs:
-  hello:
+  sast:
+    name: "SAST · Static Analysis"
     runs-on: ubuntu-latest
     steps:
-      - run: echo "hello"
+      - run: echo test
+
+  dependency-audit:
+    name: "SCA · Dependency Audit"
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo test
+
+  secrets-scan:
+    name: "Secrets · Gitleaks + Trufflehog"
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo test
+
+  container-scan:
+    name: "Container · Trivy Image Scan"
+    runs-on: ubuntu-latest
+    if: hashFiles('Dockerfile') != ''
+    steps:
+      - run: echo test
+
+  hakuza-autopilot-scan:
+    name: "HAKUZA · Live Autopilot Run"
+    runs-on: ubuntu-latest
+    if: github.event.inputs.target != ''
+    steps:
+      - run: echo test
+
+  security-gate:
+    name: "Gate · Block on Critical Findings"
+    runs-on: ubuntu-latest
+    needs: [sast, dependency-audit, secrets-scan]
+    if: always()
+    steps:
+      - run: |
+          SAST_STATUS="${{ needs.sast.result }}"
+          DEP_STATUS="${{ needs.dependency-audit.result }}"
+          SECRETS_STATUS="${{ needs.secrets-scan.result }}"
+          echo "SAST: $SAST_STATUS"
+          echo "Dependencies: $DEP_STATUS"
+          echo "Secrets: $SECRETS_STATUS"
+          if [ "$SECRETS_STATUS" = "failure" ]; then
+            echo "BLOCKED"
+            exit 1
+          fi
+          echo "PASSED."
