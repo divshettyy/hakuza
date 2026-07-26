@@ -122,6 +122,11 @@ _COUPON_REMAINING = {"WELCOME10": 1}
 # common real-world JWT implementation bugs, not contrived for this range.
 _JWT_SECRET = "secret123"  # deliberately weak — this IS the bug, don't "fix" it
 
+# -- Stored XSS target --------------------------------------------------
+# Shared, unbounded, unescaped — a real GET-based guestbook's entire
+# storage layer in three words.
+_COMMENTS = []
+
 
 def _b64url_encode(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
@@ -257,6 +262,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._api_token()
             elif path == "/api/profile":
                 self._api_profile()
+            elif path == "/comments":
+                self._comments(qs)
             elif re.match(r"^/user/\d+/profile$", path):
                 self._profile(path, qs)
             elif re.match(r"^/order/[0-9a-f-]{36}$", path, re.I):
@@ -304,6 +311,10 @@ class Handler(BaseHTTPRequestHandler):
               &mdash; JWT auth bypass (get a real token from /api/token, then try
               hakuza active .../api/profile --jwt &lt;token&gt; &mdash; accepts alg=none
               with no signature, and HS256 signed with the weak secret "secret123")</li>
+          <li><a href="/comments?text=hello">/comments?text=hello</a>
+              &mdash; Stored XSS (a GET-based guestbook &mdash; submit a &lt;script&gt;
+              payload once, then any later visit with a DIFFERENT text value still
+              renders it, unescaped)</li>
         </ul>
         """
         self._send(200, _page("HAKUZA Practice Range", body))
@@ -515,6 +526,28 @@ class Handler(BaseHTTPRequestHandler):
             "uid": payload.get("uid"),
             "note": "authenticated profile data",
         }), content_type="application/json")
+
+    # -- /comments?text= ------------------------------------------------
+    # Real stored XSS: a GET-based guestbook (an old but genuinely still-
+    # seen pattern — plenty of real comment/feedback widgets are wired to
+    # a plain GET form). Every submitted comment is appended to a shared
+    # list and every future page load — including ones that never
+    # submitted anything themselves — renders the FULL history, unescaped.
+    # That's the whole bug: storage and rendering both trust the input.
+    def _comments(self, qs):
+        text = qs.get("text", [None])[0]
+        if text:
+            _COMMENTS.append(text)
+        rendered = "".join(f"<li>{c}</li>" for c in _COMMENTS) or "<li><em>No comments yet.</em></li>"
+        body = f"""
+        <h1>Guestbook</h1>
+        <ul>{rendered}</ul>
+        <form>
+          <input type="text" name="text" placeholder="Leave a comment">
+          <button type="submit">Post</button>
+        </form>
+        """
+        self._send(200, _page("Comments", body))
 
     # -- /user/<id>/profile ------------------------------------------------
     # Real IDOR: no session/auth of any kind — whichever numeric ID is in

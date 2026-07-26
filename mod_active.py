@@ -1168,6 +1168,58 @@ def _test_param(ctx, parts, pairs, pname, baseline):
         )
         return  # one NoSQLi lead per parameter is enough signal
 
+    if budget.exhausted():
+        return
+
+    # --- 10. Stored XSS: does an unescaped payload persist to a request
+    # that never included it? ---
+    # Every other check in this file (including step 1's reflected XSS) is
+    # single-request: send a payload, look at THAT SAME response. Stored
+    # XSS needs two requests — write, then a SEPARATE read that never
+    # carried the payload at all — since that's the entire distinction
+    # from reflected XSS: the payload outlives the request that sent it.
+    # The second request reuses the parameter's ORIGINAL value (or its
+    # absence), which is what makes this a real storage test rather than
+    # just reflection again — if the injected script still shows up on a
+    # request that only ever said orig_value, something server-side
+    # persisted it.
+    stored_canary = f"hkzstore{secrets.token_hex(6)}"
+    stored_script = f"<script>{stored_canary}alert(1)</script>"
+    url_write = _build_url(parts, _with_param(pairs, pname, stored_script))
+    resp_write = _polite_get(budget, delay, url_write, timeout)
+    if resp_write is not None and not budget.exhausted():
+        readback_url = _build_url(parts, _with_param(pairs, pname, orig_value))
+        resp_read = _polite_get(budget, delay, readback_url, timeout)
+        if resp_read is not None:
+            body_read = resp_read.text or ""
+            if stored_script in body_read:
+                _persist(
+                    ctx,
+                    title=f"Stored XSS via '{pname}' parameter",
+                    severity="critical",
+                    category="Cross-Site Scripting (Stored)",
+                    url=readback_url, param=pname, payload=stored_script,
+                    description=(
+                        f"A working <script> payload was submitted once via '{pname}', then a "
+                        f"COMPLETELY SEPARATE follow-up request — using only the parameter's "
+                        f"original value ('{orig_value}'), never carrying the payload itself — "
+                        f"still returned the payload verbatim, unescaped, in its response. The "
+                        f"injected script outlived the request that sent it, which is the "
+                        f"defining property of stored (not reflected) XSS: every visitor to "
+                        f"this page is affected, not just someone who clicks a crafted link."
+                    ),
+                    baseline_snippet=_ctx_snippet(baseline["body"], ""),
+                    mutated_snippet=_ctx_snippet(body_read, stored_script),
+                    impact=("Every visitor to this page — not just a phished victim — executes "
+                           "the attacker's JavaScript in this site's security context: session "
+                           "hijacking, credential theft, or full account takeover at scale, with "
+                           "no social engineering required after the initial injection."),
+                    remediation=("Apply context-appropriate output encoding at every point stored "
+                                "data is rendered, not just at input time (storage should be raw; "
+                                "escaping is a rendering-time responsibility). Adopt a strict "
+                                "Content-Security-Policy as defense in depth."),
+                )
+
 
 # ---------------------------------------------------------------------------
 # IDOR heuristic (runs once per target, on the PATH not the query string)
