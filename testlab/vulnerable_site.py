@@ -322,6 +322,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._api_kid_token()
             elif path == "/api/kid-profile":
                 self._api_kid_profile()
+            elif path == "/graphql":
+                self._graphql(qs)
             elif re.match(r"^/user/\d+/profile$", path):
                 self._profile(path, qs)
             elif re.match(r"^/order/[0-9a-f-]{36}$", path, re.I):
@@ -377,6 +379,8 @@ class Handler(BaseHTTPRequestHandler):
               <a href="/api/kid-profile">/api/kid-profile</a>
               &mdash; JWT kid header path traversal (naive filesystem key lookup &mdash;
               try hakuza active .../api/kid-profile --jwt &lt;token&gt;)</li>
+          <li><a href="/graphql?query=%7B__schema%7BqueryType%7Bname%7D%7D%7D">/graphql?query=...</a>
+              &mdash; GraphQL introspection enabled for anonymous callers</li>
         </ul>
         """
         self._send(200, _page("HAKUZA Practice Range", body))
@@ -631,6 +635,38 @@ class Handler(BaseHTTPRequestHandler):
             "uid": payload.get("uid"),
             "note": "authenticated profile data (kid-based key lookup)",
         }), content_type="application/json")
+
+    # -- /graphql?query= ------------------------------------------------
+    # Real GraphQL introspection misconfiguration: any anonymous caller
+    # can ask the schema to describe itself. This is a minimal hand-rolled
+    # responder (no graphql-core dependency needed to demonstrate the
+    # actual bug, which is a missing access check on introspection, not
+    # anything about GraphQL's execution engine) that recognizes the
+    # standard __schema introspection query shape and answers it exactly
+    # like a real, misconfigured GraphQL server would.
+    def _graphql(self, qs):
+        query = qs.get("query", [""])[0]
+        if "__schema" in query:
+            response = {
+                "data": {
+                    "__schema": {
+                        "queryType": {"name": "Query"},
+                        "types": [
+                            {"name": "Query", "kind": "OBJECT"},
+                            {"name": "User", "kind": "OBJECT"},
+                            {"name": "Order", "kind": "OBJECT"},
+                            {"name": "AdminMutation", "kind": "OBJECT"},
+                            {"name": "ResetPassword", "kind": "OBJECT"},
+                            {"name": "String", "kind": "SCALAR"},
+                            {"name": "Int", "kind": "SCALAR"},
+                        ],
+                    }
+                }
+            }
+            self._send(200, json.dumps(response), content_type="application/json")
+            return
+        self._send(200, json.dumps({"data": {"message": "Hello from GraphQL"}}),
+                   content_type="application/json")
 
     # -- /user/<id>/profile ------------------------------------------------
     # Real IDOR: no session/auth of any kind — whichever numeric ID is in

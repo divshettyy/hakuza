@@ -69,6 +69,7 @@ second opinion).
 | `/api/token` → `/api/profile` | `Authorization: Bearer` header | Real hand-rolled HS256 JWT issuer/verifier — trusts the token's own declared `alg` (accepts `none` with zero signature check) and verifies real HS256 signatures against a weak, guessable secret (`secret123`) | JWT — get a real token from `/api/token`, then `hakuza active .../api/profile --jwt <token>` finds both the alg=none bypass and the weak-secret HS256 forgery |
 | `/comments?text=` | `text` | Every submitted comment is appended to a shared, unbounded list and every future page load renders the full history unescaped — a real GET-based guestbook, still a genuine pattern in the wild | Stored XSS — submit `<script>...</script>` once, then any later visit with a *different* `text` value still renders it |
 | `/api/kid-token` → `/api/kid-profile` | `Authorization: Bearer` header | A second, separately-vulnerable JWT verifier — looks the signing key up per-token via the header's own `kid` field (a real key-rotation pattern) with a naive `os.path.join` and no containment check | JWT `kid` path traversal — `kid=../../../../dev/null` signed with an empty-bytes secret is accepted |
+| `/graphql?query=` | `query` | A minimal hand-rolled GraphQL responder that answers the standard introspection query for any anonymous caller, no access check at all | GraphQL Introspection Enabled — leaks 7 real type names including `AdminMutation` and `ResetPassword` |
 
 ## Fixed: the IDOR heuristic now catches same-template IDORs
 

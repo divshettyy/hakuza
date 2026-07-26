@@ -1743,6 +1743,82 @@ def _test_race_condition(ctx, target_url, baseline):
 
 
 # ---------------------------------------------------------------------------
+# GraphQL introspection (runs once per target — gated to URLs that look
+# like a GraphQL endpoint)
+# ---------------------------------------------------------------------------
+
+_GRAPHQL_URL_RE = re.compile(r"graphql|/gql\b", re.I)
+_GRAPHQL_INTROSPECTION_QUERY = "{__schema{queryType{name}types{name kind}}}"
+
+
+def _test_graphql_introspection(ctx, target_url):
+    """Many real GraphQL servers (Apollo Server, GraphQL Yoga, Django
+    Graphene, and others) accept queries via a plain GET ?query= param for
+    convenience and CDN cache-ability — no POST body needed to test this.
+    Introspection (a client asking the schema to describe itself) is a
+    standard GraphQL feature, but leaving it enabled for anonymous callers
+    in production hands an attacker the complete API surface — every type,
+    field, and mutation name, including ones never meant to be discovered
+    by probing — a real, common, and well-known GraphQL misconfiguration."""
+    if not _GRAPHQL_URL_RE.search(target_url):
+        return
+    budget, delay, timeout = ctx.budget, ctx.delay, ctx.timeout
+    if budget.exhausted():
+        return
+
+    parts = urlsplit(target_url)
+    pairs = parse_qsl(parts.query, keep_blank_values=True)
+    new_pairs = [(k, v) for k, v in pairs if k != "query"] + [("query", _GRAPHQL_INTROSPECTION_QUERY)]
+    url = _build_url(parts, new_pairs)
+    resp = _polite_get(budget, delay, url, timeout)
+    if resp is None:
+        return
+    body = resp.text or ""
+
+    type_names = []
+    try:
+        data = json.loads(body)
+        schema = (data.get("data") or {}).get("__schema") if isinstance(data, dict) else None
+        if isinstance(schema, dict) and isinstance(schema.get("types"), list):
+            type_names = [t.get("name") for t in schema["types"] if isinstance(t, dict) and t.get("name")]
+    except Exception:
+        pass
+
+    # Fall back to a text-based check in case the response isn't the exact
+    # shape expected above but still clearly leaked real schema data.
+    schema_leaked = len(type_names) >= 3 or (
+        '"__schema"' in body and '"types"' in body and body.count('"name"') >= 5
+    )
+    if not schema_leaked:
+        return
+
+    sample = ", ".join(type_names[:12]) if type_names else _ctx_snippet(body, "__schema", maxlen=300)
+    _persist(
+        ctx,
+        title="GraphQL Introspection Enabled",
+        severity="medium",
+        category="GraphQL Misconfiguration",
+        url=url, param="query", payload=_GRAPHQL_INTROSPECTION_QUERY,
+        description=(
+            f"Sending a standard GraphQL introspection query via GET (?query=...) returned "
+            f"the real schema — {len(type_names) or 'several'} type name(s) leaked, e.g. "
+            f"\"{sample[:200]}\". Introspection is a normal GraphQL feature, but leaving it "
+            f"enabled for anonymous callers hands an attacker the complete API surface "
+            f"without needing to guess or brute-force field/mutation names."
+        ),
+        baseline_snippet="N/A (introspection-only check, no body comparison)",
+        mutated_snippet=f"Leaked types: {sample}",
+        impact=("The full schema — every type, field, and mutation, including internal or "
+               "unlinked ones never meant to be discovered — becomes directly enumerable, "
+               "significantly narrowing the work needed to find a real vulnerability "
+               "(e.g. an admin mutation with no authorization check)."),
+        remediation=("Disable introspection for anonymous/production traffic (most GraphQL "
+                    "frameworks support this via a single config flag), or require "
+                    "authentication before introspection queries are answered."),
+    )
+
+
+# ---------------------------------------------------------------------------
 # CORS misconfiguration (runs once per target — a response-header property,
 # not a per-parameter injection point)
 # ---------------------------------------------------------------------------
@@ -2473,6 +2549,9 @@ def cmd_active(args, console) -> None:
 
         if not budget.exhausted():
             _test_race_condition(ctx, target_url, baseline)
+
+        if not budget.exhausted():
+            _test_graphql_introspection(ctx, target_url)
 
     console.print()
     console.print(Panel(
