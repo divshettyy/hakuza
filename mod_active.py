@@ -74,6 +74,7 @@ import statistics
 import concurrent.futures
 import base64
 import hmac
+import socket
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, quote
@@ -1830,6 +1831,226 @@ def _test_default_credentials(ctx, parts, pairs, baseline):
 
 
 # ---------------------------------------------------------------------------
+# HTTP Request Smuggling (runs once per target) — the one check in this
+# file that abandons the `requests` library entirely for raw sockets,
+# since smuggling is fundamentally about ambiguous request framing
+# (conflicting Content-Length and Transfer-Encoding headers) that a
+# well-behaved HTTP client library won't let you construct in the first
+# place.
+# ---------------------------------------------------------------------------
+#
+# Sends the two classic desync probes from PortSwigger's documented
+# methodology (CL.TE, TE.CL) and TIMES the response. The signature this
+# looks for: a server that hangs waiting for bytes that will never arrive,
+# because it parsed the body boundary using the header OTHER than the one
+# actually satisfied by what the client sent.
+#
+# Important honesty note, also reflected in severity below: this timing
+# technique is most reliable against a real front-end/back-end split (a
+# CDN or reverse proxy in front of an app server — how most real targets
+# are actually deployed), where the two tiers genuinely disagree on
+# framing. Against a single monolithic server the signal can be
+# ambiguous, so this is always reported as a LEAD needing manual
+# confirmation with a dedicated exploitation tool (e.g. Burp's HTTP
+# Request Smuggler), never as a definitively confirmed finding — the same
+# honesty standard already applied to the boolean-blind SQLi and IDOR
+# heuristics elsewhere in this file. HTTP only in v1 — raw sockets plus
+# manual TLS wrapping for HTTPS targets is real added complexity not yet
+# built.
+# ---------------------------------------------------------------------------
+
+_SMUGGLE_CLTE_TEMPLATE = (
+    "POST {path} HTTP/1.1\r\n"
+    "Host: {host}\r\n"
+    "Content-Length: 4\r\n"
+    "Transfer-Encoding: chunked\r\n"
+    "Connection: close\r\n"
+    "\r\n"
+    "1\r\nA\r\nX"
+)
+
+_SMUGGLE_TECL_TEMPLATE = (
+    "POST {path} HTTP/1.1\r\n"
+    "Host: {host}\r\n"
+    "Content-Length: 3\r\n"
+    "Transfer-Encoding: chunked\r\n"
+    "Connection: close\r\n"
+    "\r\n"
+    "8\r\nSMUGGLED\r\n0\r\n\r\n"
+)
+
+
+def _raw_send_and_time(host, port, raw_bytes, connect_timeout, read_timeout):
+    """Open a fresh TCP connection, send raw bytes exactly as given (no
+    header validation/normalization — the whole point), and measure how
+    long it takes to get ANY response back. Returns (elapsed_seconds,
+    got_response, timed_out). Never raises — a connection failure just
+    means no signal, not an error to propagate."""
+    try:
+        s = socket.create_connection((host, port), timeout=connect_timeout)
+    except Exception:
+        return None, False, False
+    try:
+        s.sendall(raw_bytes)
+        s.settimeout(read_timeout)
+        t0 = time.monotonic()
+        try:
+            data = s.recv(8192)
+            return time.monotonic() - t0, bool(data), False
+        except socket.timeout:
+            return time.monotonic() - t0, False, True
+        except Exception:
+            return None, False, False
+    finally:
+        s.close()
+
+
+def _gen_smuggling_poc(host, port, path, label, raw_probe_bytes, threshold, baseline_elapsed):
+    """The generic single-request gen_python_poc() (a plain requests.get())
+    is meaningless here — it can't reproduce a raw-socket timing signature
+    any more than it could for a race condition (same problem, same fix:
+    a dedicated PoC using the actual mechanism, not the generic template).
+    This writes a standalone script that resends the EXACT raw probe bytes
+    over a real socket and re-measures elapsed time, so re-running it
+    actually re-tests the desync rather than trivially failing forever.
+    raw_probe_bytes is computed by the caller and embedded as a literal
+    bytes repr — no re-templating inside the generated script, which
+    avoids nested-escaping bugs entirely."""
+    baseline_req = f"GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n".encode()
+    return f'''#!/usr/bin/env python3
+# PoC: HTTP Request Smuggling ({label} desync pattern) reproduction
+# Target: {host}:{port}{path}
+# Resends the exact raw probe over a real socket and re-measures response
+# time — this class of finding cannot be reproduced by a normal
+# requests.get(), only by re-creating the actual raw framing ambiguity.
+# Run: python3 <this file>  (stdlib only, no dependencies)
+
+import socket
+import sys
+import time
+
+HOST = {host!r}
+PORT = {port!r}
+THRESHOLD = {threshold!r}
+RAW_PROBE = {raw_probe_bytes!r}
+RAW_BASELINE = {baseline_req!r}
+
+
+def send_and_time(raw_bytes, read_timeout):
+    s = socket.create_connection((HOST, PORT), timeout=10)
+    try:
+        s.sendall(raw_bytes)
+        s.settimeout(read_timeout)
+        t0 = time.monotonic()
+        try:
+            s.recv(8192)
+            return time.monotonic() - t0
+        except socket.timeout:
+            return time.monotonic() - t0
+    finally:
+        s.close()
+
+
+def main() -> int:
+    baseline = send_and_time(RAW_BASELINE, 10)
+    print(f"Baseline response time: {{baseline:.2f}}s")
+
+    probe = send_and_time(RAW_PROBE, THRESHOLD + 5)
+    print(f"{label} probe response time: {{probe:.2f}}s (original threshold: {threshold:.2f}s, "
+          f"original baseline: {baseline_elapsed:.2f}s)")
+
+    if probe >= THRESHOLD:
+        print("[PASS] Desync timing signature reproduced")
+        return 0
+    print("[FAIL] Response was fast this run -- may be patched, or timing is "
+          "environment-sensitive; treat as a lead either way, confirm with a "
+          "dedicated exploitation tool")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+
+def _test_smuggling(ctx, target_url):
+    parts = urlsplit(target_url)
+    if parts.scheme != "http":
+        return  # v1: HTTP only, see module-level docstring above
+    if ctx.budget.exhausted():
+        return
+    host = parts.hostname
+    port = parts.port or 80
+    path = parts.path or "/"
+
+    baseline_req = f"GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n".encode()
+    baseline_elapsed, baseline_ok, _ = _raw_send_and_time(
+        host, port, baseline_req, connect_timeout=ctx.timeout, read_timeout=ctx.timeout,
+    )
+    ctx.budget.spend()
+    if not baseline_ok or baseline_elapsed is None:
+        return  # couldn't establish a normal raw-socket baseline — don't guess further
+
+    # Same statistical-gate spirit as the time-based SQLi check elsewhere
+    # in this file: gate on how far a probe's timing sits outside THIS
+    # target's own observed baseline, not a fixed ">N seconds" rule.
+    threshold = max(baseline_elapsed * 4, 2.0)
+    read_timeout = min(threshold + 2, ctx.timeout + 8)  # bounded — never wait indefinitely
+
+    hit = None
+    for label, template in (("CL.TE", _SMUGGLE_CLTE_TEMPLATE), ("TE.CL", _SMUGGLE_TECL_TEMPLATE)):
+        if ctx.budget.exhausted():
+            break
+        raw = template.format(path=path, host=host).encode()
+        elapsed, _got, timed_out = _raw_send_and_time(
+            host, port, raw, connect_timeout=ctx.timeout, read_timeout=read_timeout,
+        )
+        ctx.budget.spend()
+        if elapsed is None:
+            continue
+        if timed_out or elapsed >= threshold:
+            hit = (label, elapsed, raw)
+            break
+
+    if hit is None:
+        return
+    label, elapsed, raw_probe_bytes = hit
+    _persist(
+        ctx,
+        title=f"Potential HTTP Request Smuggling ({label} desync pattern) — needs manual confirmation",
+        severity="high",
+        category="HTTP Request Smuggling",
+        url=target_url, param="(raw request framing)", payload=f"{label} probe",
+        description=(
+            f"A {label}-style probe (conflicting Content-Length and Transfer-Encoding "
+            f"headers, constructed to expose exactly which one this server honors) took "
+            f"{elapsed:.2f}s to respond, versus a {baseline_elapsed:.2f}s baseline — "
+            f"consistent with the server waiting for bytes that were never going to "
+            f"arrive, because it parsed the body boundary using the OTHER header than "
+            f"the one actually satisfied. This timing technique is most reliable against "
+            f"a real front-end/back-end split (a CDN or reverse proxy in front of an app "
+            f"server); against a single server the signal can be ambiguous, so this is a "
+            f"LEAD, not a confirmed finding — verify with a dedicated exploitation tool "
+            f"(e.g. Burp's HTTP Request Smuggler) before reporting this as confirmed."
+        ),
+        baseline_snippet=f"baseline (normal GET) response time: {baseline_elapsed:.2f}s",
+        mutated_snippet=f"{label} probe response time: {elapsed:.2f}s (threshold {threshold:.2f}s)",
+        impact=("If confirmed, request smuggling can bypass front-end security controls, "
+               "poison other users' requests/responses (including stealing their "
+               "responses or hijacking their sessions), or bypass authentication "
+               "entirely — one of the highest-impact web vulnerability classes when it "
+               "lands on shared infrastructure."),
+        remediation=("Reject or normalize requests with both Content-Length and "
+                    "Transfer-Encoding present at every tier (front-end and back-end); "
+                    "prefer HTTP/2 end-to-end where possible, which has no equivalent "
+                    "framing ambiguity."),
+        custom_poc_script=_gen_smuggling_poc(
+            host, port, path, label, raw_probe_bytes, threshold, baseline_elapsed,
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
 # GraphQL introspection (runs once per target — gated to URLs that look
 # like a GraphQL endpoint)
 # ---------------------------------------------------------------------------
@@ -2642,6 +2863,9 @@ def cmd_active(args, console) -> None:
 
         if not budget.exhausted():
             _test_default_credentials(ctx, parts, pairs, baseline)
+
+        if not budget.exhausted():
+            _test_smuggling(ctx, target_url)
 
     console.print()
     console.print(Panel(

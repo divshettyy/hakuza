@@ -39,8 +39,10 @@ import html
 import json
 import os
 import re
+import socket
 import sqlite3
 import sys
+import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -746,13 +748,100 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, _page("Order", body))
 
 
+# -- HTTP request smuggling demo (raw sockets, NOT http.server) ------------
+# Runs on a SEPARATE port. Hand-rolled at the byte level on purpose — this
+# is the one bug class that http.server's own request parsing would
+# normalize/reject before Handler ever saw it, so demonstrating the real
+# ambiguity needs direct control over exactly which bytes get read and
+# when.
+#
+# What it reproduces: when both Content-Length and Transfer-Encoding are
+# present, this deliberately trusts Content-Length to bound the body read,
+# then checks whether what it read forms COMPLETE, valid chunked framing
+# (a real chunked body always ends with a "0" terminator chunk). If it
+# doesn't — exactly what hakuza active's CL.TE/TE.CL probes send on
+# purpose — it keeps waiting on the socket for the rest of what it thinks
+# is an incomplete chunked message. Since the probing client already sent
+# everything and is just waiting to read a response, that recv() call
+# genuinely blocks on real missing bytes until its own timeout — not a
+# hardcoded sleep(), the actual signature a real vulnerable parser
+# produces. This validates hakuza active's timing-based detector against
+# a real hang, not just against "did it avoid a false positive."
+def _smuggle_demo_serve(port):
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", port))
+    srv.listen(20)
+    while True:
+        conn, _addr = srv.accept()
+        threading.Thread(target=_smuggle_demo_handle, args=(conn,), daemon=True).start()
+
+
+def _smuggle_demo_handle(conn):
+    conn.settimeout(10)
+    try:
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            chunk = conn.recv(4096)
+            if not chunk:
+                return
+            buf += chunk
+        header_end = buf.index(b"\r\n\r\n") + 4
+        header_bytes, body_so_far = buf[:header_end], buf[header_end:]
+
+        headers = {}
+        for line in header_bytes.split(b"\r\n")[1:]:
+            if b":" in line:
+                k, v = line.split(b":", 1)
+                headers[k.strip().lower()] = v.strip()
+
+        if b"content-length" in headers and b"transfer-encoding" in headers:
+            try:
+                cl = int(headers[b"content-length"])
+            except ValueError:
+                cl = 0
+            while len(body_so_far) < cl:
+                more = conn.recv(4096)
+                if not more:
+                    break
+                body_so_far += more
+            body = body_so_far[:cl]
+            # A real, complete chunked body ends with a "0" terminator
+            # chunk. hakuza active's probes deliberately send a
+            # Content-Length-bounded slice that ISN'T complete chunked
+            # framing — this genuinely blocks on that, not a fake sleep.
+            looks_complete = body.rstrip(b"\r\n").endswith(b"0")
+            if not looks_complete:
+                conn.settimeout(5)
+                try:
+                    conn.recv(4096)  # blocks for real — nothing more is coming
+                except Exception:
+                    pass
+
+        body = b"OK"
+        resp = (
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n"
+            b"Content-Length: " + str(len(body)).encode() + b"\r\n"
+            b"Connection: close\r\n\r\n" + body
+        )
+        conn.sendall(resp)
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--port", type=int, default=9911)
     args = parser.parse_args()
 
+    smuggle_port = args.port + 1
+    threading.Thread(target=_smuggle_demo_serve, args=(smuggle_port,), daemon=True).start()
+
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     print(f"HAKUZA Practice Range running at http://127.0.0.1:{args.port}/  (Ctrl+C to stop)")
+    print(f"HTTP smuggling demo (raw sockets) running at http://127.0.0.1:{smuggle_port}/")
     print("This target is intentionally vulnerable. Localhost-only. Do not expose it.")
     try:
         server.serve_forever()

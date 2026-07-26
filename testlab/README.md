@@ -16,6 +16,8 @@ python3 testlab/vulnerable_site.py            # http://127.0.0.1:9911
 python3 testlab/vulnerable_site.py --port 8080
 ```
 
+This also starts a second, separate listener on `--port + 1` (9912 by default) — a hand-rolled raw-socket HTTP responder for the request-smuggling demo (see "HTTP request smuggling" below). It's not part of the main `Handler` class at all; smuggling needs byte-level control over request parsing that `http.server` would normalize away.
+
 ## Test it
 
 ```bash
@@ -71,6 +73,7 @@ second opinion).
 | `/api/kid-token` → `/api/kid-profile` | `Authorization: Bearer` header | A second, separately-vulnerable JWT verifier — looks the signing key up per-token via the header's own `kid` field (a real key-rotation pattern) with a naive `os.path.join` and no containment check | JWT `kid` path traversal — `kid=../../../../dev/null` signed with an empty-bytes secret is accepted |
 | `/graphql?query=` | `query` | A minimal hand-rolled GraphQL responder that answers the standard introspection query for any anonymous caller, no access check at all | GraphQL Introspection Enabled — leaks 7 real type names including `AdminMutation` and `ResetPassword` |
 | `/admin/login?username=&password=` | `username`, `password` | A plain equality check against a literal, never-changed `admin`/`admin` pair — a separate endpoint from `/login`, which intentionally uses a strong password so it correctly does *not* trigger this check | Default Credentials — `admin`/`admin` accepted |
+| `http://127.0.0.1:9912/` (separate port, raw sockets) | — | A hand-rolled, byte-level HTTP responder (not `http.server`) that trusts `Content-Length` even when `Transfer-Encoding` is also present, then genuinely blocks on a real `recv()` waiting for bytes that never arrive if the CL-bounded body isn't complete chunked framing | HTTP Request Smuggling (CL.TE) — a real ~5s hang, not a simulated delay |
 
 ## Fixed: the IDOR heuristic now catches same-template IDORs
 
@@ -168,6 +171,48 @@ parameter alone produces the same apparent effect as the operator payload,
 the operator proved nothing, and the finding is correctly suppressed.
 Re-verified across all 8 endpoints after the fix: 10/10 real vuln classes
 confirm, zero false positives.
+
+## HTTP request smuggling — a real hang, not a simulated delay
+
+Getting this right required more care than most checks here: a naive demo
+(just `time.sleep()` on certain requests) would validate nothing about
+whether `hakuza active`'s timing detector actually works — it would pass
+regardless of whether the detection logic was correct. The demo server on
+port 9912 is a hand-rolled, byte-level HTTP responder (not `http.server`,
+which would parse/normalize the request before the ambiguity was even
+visible) that genuinely blocks on a real `socket.recv()` call waiting for
+bytes that will never arrive, if a Content-Length-bounded request body
+doesn't form complete, valid chunked framing — exactly the real-world
+mechanism, reproduced faithfully rather than faked:
+
+```bash
+python3 -c "
+import mod_active as m
+elapsed, ok, timed_out = m._raw_send_and_time('127.0.0.1', 9912, b'GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n', 5, 5)
+print('baseline:', elapsed)  # ~0.0004s
+raw = m._SMUGGLE_CLTE_TEMPLATE.format(path='/', host='127.0.0.1').encode()
+elapsed, ok, timed_out = m._raw_send_and_time('127.0.0.1', 9912, raw, 5, 10)
+print('CL.TE probe:', elapsed)  # ~5.0s — a real block, not a sleep()
+"
+```
+
+Also worth knowing: the generic single-request PoC generator
+(`gen_python_poc`, a plain `requests.get()`) is meaningless for a
+timing-based finding — the same problem race-condition findings hit
+earlier. Caught it by actually reading the generated PoC before trusting
+it (it checked for a literal descriptive string that would never appear in
+any real response, meaning it would fail forever regardless of whether the
+bug was real). Fixed with a dedicated PoC generator
+(`_gen_smuggling_poc`) that resends the exact raw probe bytes over a real
+socket and re-measures elapsed time — independently re-run and verified it
+reproduces the same ~5s hang standalone.
+
+Findings here are always reported as a LEAD needing manual confirmation,
+never a confirmed vulnerability — this timing technique is most reliable
+against a real front-end/back-end split (a CDN or reverse proxy in front
+of an app server, how most real targets are deployed); a single
+monolithic server's timing signal can be ambiguous even when, as here, the
+demo is built to produce an unambiguous one.
 
 ## JWT testing, and a real false-positive class it surfaced
 
