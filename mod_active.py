@@ -835,6 +835,96 @@ def _test_param(ctx, parts, pairs, pname, baseline):
 # ---------------------------------------------------------------------------
 # IDOR heuristic (runs once per target, on the PATH not the query string)
 # ---------------------------------------------------------------------------
+#
+# v1 of this heuristic used a single whole-body difflib similarity band
+# (0.3-0.85) to distinguish "a genuine second record" from "an error/
+# not-found page". That missed the single most common real-world IDOR
+# shape: a well-built app's profile/order/invoice page, where a different
+# ID returns the SAME template with only a few fields swapped (username,
+# email, order total, ...) — which measures well above 0.85 similarity
+# (a real practice-range profile page measured 0.976) and was silently
+# excluded. v2 below removes the upper bound and instead inspects the
+# ACTUAL differing content (via SequenceMatcher.get_opcodes()) to decide
+# whether the change looks like real per-record data or just noise
+# (timestamps/CSRF tokens/session IDs) or an access-denied page that
+# happened to return 200 — both of which would otherwise become false
+# positives once the upper bound is gone.
+# ---------------------------------------------------------------------------
+
+# Matched against the ~40 chars of BASELINE text immediately preceding a
+# changed span — catches "Session: <changed>", "Loaded at <changed>" style
+# noise even when the changed value itself (a bare timestamp fragment or
+# session id) doesn't self-identify as noise once diffed out of context.
+_IDOR_NOISE_LABEL_RE = re.compile(
+    r"csrf|nonce|\btoken\b|timestamp|\bsession\b|request[_-]?id|"
+    r"loaded at|generated at|expires|last[_-]?updated|\bnow\b",
+    re.I,
+)
+# A changed chunk that itself looks like a random token/hash/session id,
+# independent of any surrounding label — belt-and-suspenders for the
+# context check above (e.g. a token embedded with no descriptive label).
+_IDOR_RANDOM_TOKEN_RE = re.compile(r"^(?:[0-9a-f]{12,}|[A-Za-z0-9_-]{20,})$")
+_IDOR_DENIAL_RE = re.compile(
+    r"access denied|not authorized|unauthoriz|forbidden|please log ?in|"
+    r"permission denied|401 unauthorized|403 forbidden|sign in to continue|"
+    r"you (?:must|need to) (?:log|sign) in",
+    re.I,
+)
+
+
+def _idor_diff_signal(baseline_body, mutated_body):
+    """Decide whether a mutated-ID response differs from the baseline in a
+    way that looks like a genuine different record, at ANY similarity level
+    (not just a mid-range band) — returns (is_signal, ratio, changed_sample).
+
+    Two failure modes to guard against now that there's no upper bound:
+      1. High similarity (same template, swapped data) — real IDOR, must
+         still be caught. Guarded by requiring the actual differing text to
+         be non-trivial, and by filtering out any differing span that sits
+         right after a known noise-field label in the BASELINE (context,
+         not just the changed text itself — a bare "xyz999" or "14:31:05"
+         fragment doesn't self-identify as a session id or timestamp once
+         diffed out of its "Session: "/"Loaded at " context) or that looks
+         like a random token/hash on its own.
+      2. An access-denied/login-wall page that happens to return 200 with
+         very different content from the baseline — NOT a real record,
+         would be a false positive under a loosened lower bound too.
+         Guarded by an explicit denial-phrase check.
+    """
+    baseline_body = baseline_body or ""
+    mutated_body = mutated_body or ""
+    if not mutated_body or mutated_body == baseline_body:
+        return False, 1.0 if mutated_body == baseline_body else 0.0, ""
+
+    sm = difflib.SequenceMatcher(None, baseline_body, mutated_body)
+    ratio = sm.ratio()
+    if ratio < 0.3:
+        return False, ratio, ""  # too different — likely an error/redirect page, not a sibling record
+
+    if _IDOR_DENIAL_RE.search(mutated_body):
+        return False, ratio, ""
+
+    real_chunks = []
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag not in ("replace", "insert"):
+            continue
+        chunk = mutated_body[j1:j2].strip()
+        if not chunk:
+            continue
+        context_before = baseline_body[max(0, i1 - 40):i1]
+        if _IDOR_NOISE_LABEL_RE.search(context_before):
+            continue  # sits right after a known noise-field label — skip
+        if _IDOR_RANDOM_TOKEN_RE.match(chunk):
+            continue  # looks like a random token/session id/hash on its own
+        real_chunks.append(chunk)
+
+    changed_text = " ".join(real_chunks)
+    meaningful = re.sub(r"[\s\W_]+", "", changed_text)
+    if len(meaningful) < 3:
+        return False, ratio, changed_text  # trivial, or every real diff was filtered as noise
+
+    return True, ratio, changed_text[:300]
+
 
 def _test_idor_heuristic(ctx, parts, baseline):
     m = re.search(r"/(\d+)(?:/|$)", parts.path)
@@ -861,8 +951,9 @@ def _test_idor_heuristic(ctx, parts, baseline):
         if resp is None or resp.status_code != 200:
             continue
 
-        ratio = difflib.SequenceMatcher(None, baseline["body"], resp.text or "").ratio()
-        if 0.3 <= ratio <= 0.85:
+        is_signal, ratio, changed_sample = _idor_diff_signal(baseline["body"], resp.text or "")
+        if is_signal:
+            same_template = ratio > 0.85
             ai_result = None
             if ctx.ai_enabled:
                 ai_result = _ai_escalate(ctx, "IDOR (heuristic)", "path-id", new_url, variant,
@@ -876,13 +967,25 @@ def _test_idor_heuristic(ctx, parts, baseline):
                 category="Insecure Direct Object Reference (heuristic)",
                 url=new_url, param="path-id", payload=variant,
                 description=(
-                    f"Changing the numeric path segment from {orig_id_str} to {variant} returned "
-                    f"a 200 OK response with meaningfully different content from the baseline "
-                    f"(similarity ratio {ratio:.2f}) rather than an error/not-found page. This is "
-                    f"an intentionally single-session heuristic — HAKUZA v1 cannot yet drive two "
-                    f"distinct authenticated sessions, so this is a LEAD, not a confirmed IDOR. "
-                    f"Confirm manually with two distinct authenticated user sessions before "
-                    f"reporting this as a finding."
+                    (
+                        f"Changing the numeric path segment from {orig_id_str} to {variant} returned "
+                        f"a 200 OK response using what looks like the SAME page template as the "
+                        f"baseline (similarity ratio {ratio:.2f}) but with genuinely different "
+                        f"content in place — e.g. \"{changed_sample[:150]}\" — consistent with a "
+                        f"different underlying record (a different user/order/record's data) being "
+                        f"returned rather than an access-denied page. This is the most common "
+                        f"real-world IDOR shape: a well-built page's template stays identical, only "
+                        f"the record's own fields change."
+                        if same_template else
+                        f"Changing the numeric path segment from {orig_id_str} to {variant} returned "
+                        f"a 200 OK response with meaningfully different content from the baseline "
+                        f"(similarity ratio {ratio:.2f}) rather than an error/not-found page — e.g. "
+                        f"\"{changed_sample[:150]}\"."
+                    ) +
+                    " This is an intentionally single-session heuristic — HAKUZA v1 cannot yet drive "
+                    "two distinct authenticated sessions, so this is a LEAD, not a confirmed IDOR. "
+                    "Confirm manually with two distinct authenticated user sessions before reporting "
+                    "this as a finding."
                 ),
                 baseline_snippet=_ctx_snippet(baseline["body"], ""),
                 mutated_snippet=_ctx_snippet(resp.text or "", ""),

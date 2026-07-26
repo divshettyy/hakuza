@@ -43,32 +43,45 @@ second opinion).
 | `/doc?file=` | `file` | Filename is joined onto a base directory with `os.path.join()` and no canonical-path containment check | Path Traversal / LFI (`../../../../etc/passwd`) |
 | `/go?redirect=` | `redirect` | `Location` header is set directly from the parameter, no allow-list | Open Redirect |
 | `/echo?msg=` | `msg` | Value is placed into a custom response header with no CR/LF stripping — `http.server`'s `send_header()` does not validate embedded control characters | CRLF / HTTP Header Injection |
-| `/user/<id>/profile` | path segment | No auth/session check of any kind — whichever numeric ID is in the path gets returned | Intended for the IDOR heuristic — **see note below, it currently does NOT fire here** |
+| `/user/<id>/profile` | path segment | No auth/session check of any kind — whichever numeric ID is in the path gets returned | IDOR heuristic — **confirmed firing, see below** |
 
-## Known gap this range surfaced: the IDOR heuristic misses same-template IDORs
+## Fixed: the IDOR heuristic now catches same-template IDORs
 
-Testing against `/user/<id>/profile` was genuinely useful: the heuristic
-(`mod_active.py::_test_idor_heuristic`) only flags a differently-numbered ID
-as a lead if the response's `difflib` similarity to the baseline falls in the
-**0.3–0.85** band — "meaningfully different, but still a real 200 OK page,"
-distinguishing a real second record from an error/not-found page. This
-practice range's two profile pages differ only in username/email/SSN inside
-an otherwise identical template, which measures at **0.976** similarity —
-*above* the band, so it's correctly excluded by the current logic even though
-it's a completely real IDOR (confirmed directly: `curl
-127.0.0.1:9911/user/1001/profile` vs `.../user/1000/profile` returns two
-different real users, no auth check at all).
+Testing against `/user/<id>/profile` originally surfaced a real gap: the v1
+heuristic only flagged a differently-numbered ID as a lead if the response's
+whole-body `difflib` similarity to the baseline fell in a **0.3–0.85** band.
+This practice range's two profile pages differ only in username/email/SSN
+inside an otherwise identical template — **0.976** similarity, above the
+band — so a completely real IDOR (confirmed directly via curl: `/user/1001/profile`
+vs `/user/1000/profile` return two different real users, no auth check at
+all) went undetected. That's arguably the *most common* real-world IDOR
+shape (a well-built app's profile/order/invoice page, same template,
+different data), so this mattered.
 
-This is arguably the *most common* real-world IDOR shape (a well-built app's
-profile/order/invoice page — same template, different data), so the
-heuristic's current band under-covers it. Not fixed yet — flagging it here so
-it isn't lost. A reasonable fix: also flag when the response is *highly*
-similar in structure but differs in specific token positions that match the
-injected ID or adjacent-looking data (e.g., diff on `difflib.unified_diff`
-line-by-line rather than whole-body ratio, or specifically check whether the
-requested ID variant's value literally appears in the new response body while
-the original ID's value does not) — worth a follow-up pass on
-`mod_active.py` if IDOR coverage matters for real engagements.
+**Fixed in `mod_active.py::_idor_diff_signal`.** The upper similarity bound
+is gone. Instead, every differing span between baseline and mutated response
+(via `SequenceMatcher.get_opcodes()`) is checked in context: a span is
+treated as noise (and excluded) if the ~40 characters immediately preceding
+it in the *baseline* match a known noise-field label (`Session:`, `csrf`,
+`Loaded at`, `timestamp`, etc.) or if the changed text itself looks like a
+bare random token/hash — otherwise, if any real, non-trivial content differs
+outside those cases, it's treated as a signal at *any* similarity level,
+still gated by an explicit access-denied/login-wall phrase check (so a 200-OK
+"please log in" page doesn't become a false positive once the upper bound is
+gone) and a lower similarity floor of 0.3 (still excludes wildly different
+error pages).
+
+Re-verified against this exact range after the fix: `hakuza active
+"http://127.0.0.1:9911/user/1001/profile?tab=1" --no-ai` now correctly
+persists `Potential IDOR (heuristic) on path ID 1001`, citing `alice` as the
+differing content (the swapped username), at similarity ratio 0.98. Also
+unit-verified the new false-positive guards directly: a response that's
+byte-identical, one that differs only by a session-ID/timestamp swap, and a
+200-OK access-denied page are all correctly still excluded — plus a
+realistic case where a real IDOR and simultaneous noise churn (session id
+*and* timestamp both changing at the same time as the swapped username) are
+both present, and the noise is correctly filtered out while the real signal
+still fires.
 
 ## Extending this range
 
