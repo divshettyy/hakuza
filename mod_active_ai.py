@@ -240,6 +240,7 @@ def gen_python_poc(
     param: str,
     payload: str,
     expected_signal: str,
+    verify: bool = True,
 ) -> str:
     """Return the full text of a standalone, immediately-runnable PoC script.
 
@@ -249,12 +250,17 @@ def gen_python_poc(
     CI-style regression check. All caller-supplied strings (payload, param,
     url, expected_signal) are embedded via repr() so arbitrary attacker
     payload content can never break out of the generated source.
+
+    `verify=False` is needed for checks like the exposed-Kubernetes-API one,
+    whose targets (kubelet, K8s API server) are near-universally
+    self-signed — without it the generated PoC raises SSLError on almost
+    any real target regardless of whether the finding is still live.
     """
     method_upper = (method or "GET").upper()
     if method_upper == "POST":
-        request_call = "requests.post(URL, data=PARAMS, timeout=15)"
+        request_call = "requests.post(URL, data=PARAMS, timeout=15, verify=VERIFY)"
     else:
-        request_call = "requests.get(URL, params=PARAMS, timeout=15)"
+        request_call = "requests.get(URL, params=PARAMS, timeout=15, verify=VERIFY)"
 
     header = (
         "#!/usr/bin/env python3\n"
@@ -268,11 +274,16 @@ def gen_python_poc(
 
     body = f'''
 import sys
+import warnings
 import requests
 
 URL = {url!r}
 PARAMS = {params!r}
 EXPECTED_SIGNAL = {expected_signal!r}
+VERIFY = {verify!r}
+
+if not VERIFY:
+    warnings.filterwarnings("ignore", message="Unverified HTTPS request")
 
 
 def main() -> int:
