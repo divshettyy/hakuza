@@ -3139,6 +3139,171 @@ def _test_graphql_introspection(ctx, target_url):
 # not a per-parameter injection point)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Web Cache Deception (runs once per target — a URL-routing property, not a
+# per-parameter injection point)
+# ---------------------------------------------------------------------------
+#
+# A genuinely different mechanism from everything else in this file: not an
+# injection at all, but a routing-confusion bug. Many frameworks/reverse
+# proxies greedily match a route prefix and ignore trailing path segments,
+# or strip path-parameters (;foo) before routing but leave them in the raw
+# path a downstream cache keys on. Appending a fake static-looking filename
+# to a dynamic, non-static URL and getting the SAME dynamic content back is
+# the routing-confusion half of the bug (Omer Gil's original research and
+# the well-known variants since); the exploitable half needs a cache layer
+# willing to store that response under the deceptive URL, which is why this
+# check also inspects Cache-Control before ever calling it confirmed — a
+# response explicitly marked no-store/private is routing-confused but not
+# actually cacheable, and reporting that as a critical finding would
+# overstate real risk. Genuinely uncertain when Cache-Control is silent
+# (several real CDNs cache by file-extension heuristic regardless of what
+# the origin sends, a detail this tool can't see from outside), so that
+# case is reported as an honest lead rather than a confirmed finding — the
+# same "confirmed content match vs. honest lead" tiering this file already
+# uses for SSRF's cloud-metadata signal and the smuggling check.
+# ---------------------------------------------------------------------------
+
+_CACHE_DECEPTION_STATIC_EXT_RE = re.compile(
+    r"\.(css|js|mjs|png|jpe?g|gif|ico|svg|webp|woff2?|ttf|eot|map|txt|json|pdf)$", re.I
+)
+_CACHE_DECEPTION_CACHEABLE_RE = re.compile(r"\bpublic\b|\bmax-age\s*=\s*[1-9]", re.I)
+_CACHE_DECEPTION_UNCACHEABLE_RE = re.compile(r"\bno-store\b|\bprivate\b|\bmax-age\s*=\s*0\b", re.I)
+
+
+def _test_cache_deception(ctx, target_url, baseline):
+    parts = urlsplit(target_url)
+    if _CACHE_DECEPTION_STATIC_EXT_RE.search(parts.path):
+        return  # already a real static-asset path — not a deception target
+    budget, delay, timeout = ctx.budget, ctx.delay, ctx.timeout
+
+    # Two classic, independent path-confusion techniques: an extra path
+    # SEGMENT after a trailing static-looking filename (works against
+    # servers/frameworks that greedily match a route prefix and ignore
+    # anything after it), and a path-PARAMETER (;foo) suffix (works
+    # against servers that strip ;params before routing internally, but
+    # leave them in the raw path a downstream cache keys on verbatim).
+    base_path = parts.path.rstrip("/") or "/"
+    candidates = [
+        base_path + "/hakuza-cache-deception-probe.css",
+        base_path + ";hakuza-cache-deception-probe.css",
+    ]
+    for suffix_path in candidates:
+        if budget.exhausted():
+            return
+        mutated_url = urlunsplit((parts.scheme, parts.netloc, suffix_path, parts.query, parts.fragment))
+        time.sleep(delay)
+        budget.spend()
+        try:
+            resp = requests.get(mutated_url, timeout=timeout, headers=_UA_HEADERS)
+        except Exception:
+            continue
+        if resp.status_code != 200:
+            continue  # a real 404/redirect here means routing is NOT confused — correct behavior
+
+        body = resp.text or ""
+        similarity = difflib.SequenceMatcher(None, baseline["body"], body).ratio()
+        if similarity < 0.95:
+            continue  # genuinely different content — not routing confusion
+
+        cc = resp.headers.get("Cache-Control", "")
+        uncacheable = bool(_CACHE_DECEPTION_UNCACHEABLE_RE.search(cc))
+        cacheable = bool(_CACHE_DECEPTION_CACHEABLE_RE.search(cc)) and not uncacheable
+
+        if uncacheable:
+            # An explicit no-store/private/max-age=0 is a genuine, working
+            # safety control — nearly every real cache (browser, CDN,
+            # reverse proxy) respects an explicit directive like this, as
+            # opposed to the genuinely ambiguous "no Cache-Control at all"
+            # case below (where several real CDNs fall back to caching by
+            # file-extension heuristic regardless of origin headers). The
+            # routing confusion technically still exists here, but
+            # reporting a "needs manual confirmation" finding against a
+            # response that explicitly forbids caching would overstate
+            # real risk — so this specific candidate is silently skipped,
+            # not reported at any severity.
+            continue
+
+        if cacheable:
+            _persist(
+                ctx,
+                title="Web Cache Deception — routing confusion + cacheable response",
+                severity="high",
+                category="Web Cache Deception",
+                url=mutated_url, param="(path suffix, not a query parameter)",
+                payload=suffix_path,
+                description=(
+                    f"Appending a fake static filename to this URL's path "
+                    f"('{suffix_path}') returned the SAME dynamic content as the real "
+                    f"page ({similarity:.2f} similarity) — the server routes the "
+                    f"static-looking path to the same dynamic handler, a routing-"
+                    f"confusion bug — AND the response carries an explicitly cacheable "
+                    f"Cache-Control ('{cc}'). If a CDN, reverse proxy, or any shared "
+                    f"cache sits in front of this application, it may store this "
+                    f"response under the deceptive URL and serve it to every "
+                    f"subsequent visitor who requests that same path — including any "
+                    f"session-specific or personalized content this page happens to "
+                    f"contain for the user whose request got cached."
+                ),
+                baseline_snippet=_ctx_snippet(baseline["body"], ""),
+                mutated_snippet=_ctx_snippet(body, "", maxlen=500),
+                impact=("Any personalized or session-scoped content this page returns "
+                       "for one user becomes visible to every subsequent visitor of the "
+                       "same deceptive URL, for as long as the cache entry lives — a "
+                       "real, well-documented technique behind numerous bug bounty "
+                       "disclosures on exactly this class of routing bug."),
+                remediation=("Configure routing to reject unrecognized trailing path "
+                            "segments and path-parameters with a real 404 rather than "
+                            "falling through to a catch-all handler, and set explicit "
+                            "Cache-Control: no-store (or private) on every response that "
+                            "can contain per-user content, regardless of URL shape."),
+            )
+            return
+        else:
+            ctx.console.print(
+                f"  [yellow]Routing confusion found on {_rich_escape(mutated_url)} "
+                f"({similarity:.2f} similarity to the real page), but Cache-Control "
+                f"('{_rich_escape(cc) or '(not set)'}') doesn't explicitly indicate this "
+                f"response would be cached — reporting as a lead, not a confirmed "
+                f"finding, since some CDNs cache by file-extension heuristic "
+                f"regardless of what the origin sends, a detail this tool can't "
+                f"observe from outside.[/yellow]"
+            )
+            _persist(
+                ctx,
+                title="Potential Web Cache Deception (routing confusion) — needs manual confirmation",
+                severity="medium",
+                category="Web Cache Deception",
+                url=mutated_url, param="(path suffix, not a query parameter)",
+                payload=suffix_path,
+                description=(
+                    f"Appending a fake static filename to this URL's path "
+                    f"('{suffix_path}') returned the SAME dynamic content as the real "
+                    f"page ({similarity:.2f} similarity) — a routing-confusion bug. "
+                    f"Cache-Control ('{cc or '(not set)'}') doesn't explicitly mark this "
+                    f"response cacheable, so whether it's actually exploitable depends "
+                    f"on any caching infrastructure in front of this application "
+                    f"(several real CDNs cache by file-extension heuristic regardless "
+                    f"of origin headers) — this is a differential-analysis LEAD, not "
+                    f"yet fully confirmed, manual verification against the real "
+                    f"deployment's caching layer recommended."
+                ),
+                baseline_snippet=_ctx_snippet(baseline["body"], ""),
+                mutated_snippet=_ctx_snippet(body, "", maxlen=500),
+                impact=("If any caching layer in front of this application caches by "
+                       "file-extension heuristic (common on several real CDNs, "
+                       "independent of Cache-Control), the same risk as a confirmed "
+                       "finding applies: personalized content cached under a "
+                       "deceptive URL becomes visible to every subsequent visitor."),
+                remediation=("Configure routing to reject unrecognized trailing path "
+                            "segments and path-parameters with a real 404 rather than "
+                            "falling through to a catch-all handler, and set explicit "
+                            "Cache-Control: no-store (or private) on every response that "
+                            "can contain per-user content, regardless of URL shape."),
+            )
+            return
+
+
 def _test_cors(ctx, target_url):
     """Two real cross-origin requests: an attacker-controlled Origin, and
     the `null` origin (sent by sandboxed iframes, some sandboxed redirects,
@@ -3935,6 +4100,9 @@ def cmd_active(args, console) -> None:
 
         if not budget.exhausted():
             _test_cors(ctx, target_url)
+
+        if not budget.exhausted():
+            _test_cache_deception(ctx, target_url, baseline)
 
         if not budget.exhausted():
             _test_race_condition(ctx, target_url, baseline)

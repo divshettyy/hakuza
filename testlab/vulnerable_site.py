@@ -378,6 +378,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._profile(path, qs)
             elif re.match(r"^/order/[0-9a-f-]{36}$", path, re.I):
                 self._order(path)
+            elif path == "/dashboard" or re.match(r"^/dashboard[/;]", path):
+                self._dashboard(path)
+            elif path == "/dashboard-safe":
+                self._dashboard_safe()
             else:
                 self._send(404, _page("Not found", "<h1>404</h1><p>No such page.</p>"))
         except Exception as exc:
@@ -455,6 +459,17 @@ class Handler(BaseHTTPRequestHandler):
               lxml's resolve_entities=True, genuinely reads /etc/passwd; see also
               <a href="/xmlpreview-safe">/xmlpreview-safe</a>, the
               resolve_entities=False negative control)</li>
+          <li><a href="/hppdemo?msg=hello&msg=%3Cscript%3Ealert(1)%3C/script%3E">/hppdemo?msg=hello&amp;msg=&lt;script&gt;...</a>
+              &mdash; HTTP Parameter Pollution (the filter checks the FIRST occurrence
+              of a duplicated parameter, the renderer uses the LAST &mdash; see also
+              <a href="/hppdemo-safe">/hppdemo-safe</a>, the same-occurrence negative
+              control)</li>
+          <li><a href="/dashboard">/dashboard</a> (try
+              <a href="/dashboard/nonexistent.css">/dashboard/nonexistent.css</a> too)
+              &mdash; Web Cache Deception (routing greedily matches any path starting
+              with /dashboard and returns the same personalized content, marked
+              Cache-Control: public &mdash; see also <a href="/dashboard-safe">/dashboard-safe</a>,
+              the exact-match-routing negative control)</li>
         </ul>
         """
         self._send(200, _page("HAKUZA Practice Range", body))
@@ -1046,6 +1061,46 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, _page("HPP demo (safe)", "<p>Blocked: message contains a script tag.</p>"))
             return
         self._send(200, _page("HPP demo (safe)", f"<p>You said: {first}</p>"))
+
+    # -- /dashboard, /dashboard/*, /dashboard;* --------------------------
+    # Real web cache deception: routing that greedily matches ANY path
+    # starting with /dashboard (a trailing segment like /nonexistent.css,
+    # or a path-parameter like ;nonexistent.css) and serves the exact
+    # same personalized page regardless -- a genuinely common real-world
+    # pattern (frameworks/reverse proxies that match a route PREFIX and
+    # ignore what follows). Sets Cache-Control: public, max-age=3600,
+    # which a real CDN/shared cache would honor -- the second half of the
+    # bug, since routing confusion alone isn't exploitable unless
+    # something is actually willing to cache the result. A fake session
+    # token stands in for the personalized/per-user content a real
+    # dashboard would show, so the stakes read as concrete: whoever
+    # requests the cached deceptive URL next sees THIS user's token.
+    def _dashboard(self, path):
+        # Deliberately does NOT echo `path` back into the body -- the
+        # response is byte-for-byte identical no matter which suffix
+        # reached this handler, exactly the shape of a real cache
+        # deception target (a genuinely static-feeling personalized page,
+        # not one that varies per request).
+        body = """
+        <h1>Your dashboard</h1>
+        <p>Welcome back! Your session token: <code>sess_REDACTED-DEMO-TOKEN-4f9a1c</code></p>
+        """
+        self._send(200, _page("Dashboard", body),
+                   extra_headers={"Cache-Control": "public, max-age=3600"})
+
+    # -- /dashboard-safe -----------------------------------------------------
+    # Same page content, EXCEPT the routing only matches the exact path --
+    # /dashboard-safe/anything.css falls through to the ordinary 404
+    # handler instead of reaching this method at all. No greedy-prefix
+    # routing, so there's nothing for the cache-deception path-confusion
+    # technique to find. Negative control.
+    def _dashboard_safe(self):
+        body = f"""
+        <h1>Your dashboard (safe)</h1>
+        <p>Welcome back! Your session token: <code>sess_REDACTED-DEMO-TOKEN-4f9a1c</code></p>
+        """
+        self._send(200, _page("Dashboard (safe)", body),
+                   extra_headers={"Cache-Control": "public, max-age=3600"})
 
     # -- /user/<id>/profile ------------------------------------------------
     # Real IDOR: no session/auth of any kind — whichever numeric ID is in
