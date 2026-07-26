@@ -337,6 +337,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._api_kid_profile()
             elif path == "/graphql":
                 self._graphql(qs)
+            elif path in ("/pods", "/api/v1/pods", "/api/v1/namespaces"):
+                self._k8s_pods()
             elif re.match(r"^/user/\d+/profile$", path):
                 self._profile(path, qs)
             elif re.match(r"^/order/[0-9a-f-]{36}$", path, re.I):
@@ -396,6 +398,9 @@ class Handler(BaseHTTPRequestHandler):
               &mdash; GraphQL introspection enabled for anonymous callers</li>
           <li><a href="/admin/login?username=guest&password=wrong">/admin/login?username=&amp;password=</a>
               &mdash; Default credentials (admin/admin, never changed)</li>
+          <li><a href="/api/v1/pods">/api/v1/pods</a>
+              &mdash; Exposed Kubernetes/kubelet API (anonymous-auth enabled &mdash;
+              leaks pod env vars including fake DB_PASSWORD/STRIPE_SECRET_KEY)</li>
         </ul>
         """
         self._send(200, _page("HAKUZA Practice Range", body))
@@ -699,6 +704,41 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send(200, json.dumps({"data": {"message": "Hello from GraphQL"}}),
                    content_type="application/json")
+
+    # -- /api/v1/pods (kubelet/Kubernetes API exposure demo) --------------
+    # A real kubelet's /pods API is HTTPS with a self-signed cert;
+    # reproducing that here would need either a third-party crypto library
+    # or shelling out to openssl at startup, breaking this range's
+    # zero-dependency, single-file philosophy for a detail that's
+    # orthogonal to the actual bug: anonymous-auth left enabled, which
+    # leaks this exact PodList shape regardless of which transport carries
+    # it. Real, illustrative-but-fake secret/env-var names included so the
+    # stakes of a leaked pod list are concrete, not abstract.
+    def _k8s_pods(self):
+        response = {
+            "kind": "PodList",
+            "apiVersion": "v1",
+            "items": [
+                {
+                    "metadata": {"name": "payments-api-7d9f", "namespace": "prod"},
+                    "spec": {
+                        "containers": [{
+                            "name": "payments-api",
+                            "image": "internal-registry/payments-api:2.4.1",
+                            "env": [
+                                {"name": "DB_PASSWORD", "value": "REDACTED-DEMO-VALUE"},
+                                {"name": "STRIPE_SECRET_KEY", "value": "REDACTED-DEMO-VALUE"},
+                            ],
+                        }],
+                    },
+                },
+                {
+                    "metadata": {"name": "redis-cache-2x", "namespace": "prod"},
+                    "spec": {"containers": [{"name": "redis", "image": "redis:7.2"}]},
+                },
+            ],
+        }
+        self._send(200, json.dumps(response), content_type="application/json")
 
     # -- /user/<id>/profile ------------------------------------------------
     # Real IDOR: no session/auth of any kind — whichever numeric ID is in

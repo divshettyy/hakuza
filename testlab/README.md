@@ -74,6 +74,7 @@ second opinion).
 | `/graphql?query=` | `query` | A minimal hand-rolled GraphQL responder that answers the standard introspection query for any anonymous caller, no access check at all | GraphQL Introspection Enabled — leaks 7 real type names including `AdminMutation` and `ResetPassword` |
 | `/admin/login?username=&password=` | `username`, `password` | A plain equality check against a literal, never-changed `admin`/`admin` pair — a separate endpoint from `/login`, which intentionally uses a strong password so it correctly does *not* trigger this check | Default Credentials — `admin`/`admin` accepted |
 | `http://127.0.0.1:9912/` (separate port, raw sockets) | — | A hand-rolled, byte-level HTTP responder (not `http.server`) that trusts `Content-Length` even when `Transfer-Encoding` is also present, then genuinely blocks on a real `recv()` waiting for bytes that never arrive if the CL-bounded body isn't complete chunked framing | HTTP Request Smuggling (CL.TE) — a real ~5s hang, not a simulated delay |
+| `/api/v1/pods` (also `/pods`, `/api/v1/namespaces`) | — | Real Kubernetes/kubelet API shape (`PodList`, real field structure), anonymous-auth left enabled — the actual bug this demonstrates, container/cluster *escape* itself needs to run from inside a container and isn't something this range (or `hakuza active`, remotely) can demonstrate | Exposed Kubernetes/Kubelet API — leaks pod env vars including fake `DB_PASSWORD`/`STRIPE_SECRET_KEY` |
 
 ## Fixed: the IDOR heuristic now catches same-template IDORs
 
@@ -213,6 +214,28 @@ against a real front-end/back-end split (a CDN or reverse proxy in front
 of an app server, how most real targets are deployed); a single
 monolithic server's timing signal can be ambiguous even when, as here, the
 demo is built to produce an unambiguous one.
+
+## Exposed Kubernetes API — the testable slice of "container escape"
+
+"Container escape" got written off once as needing fundamentally different
+tooling — genuinely true for the actual escape (breaking a running
+container's namespace needs to run from inside it). But an exposed,
+anonymous-auth-enabled kubelet or Kubernetes API server is a plain REST
+API leaking real cluster data (or worse, offering command execution via
+the kubelet's exec/run endpoints) to anyone who can reach it — that slice
+is exactly as testable as any other HTTP endpoint, and it's a real,
+well-known finding (CIS Kubernetes Benchmark 4.2.1).
+
+`/api/v1/pods` here demonstrates the actual leaked-data shape a real
+kubelet would return, with illustrative-but-fake secret values
+(`DB_PASSWORD`, `STRIPE_SECRET_KEY`) so the stakes read as concrete rather
+than abstract. One honest scoping note: a real kubelet API is HTTPS with a
+self-signed certificate; reproducing that here would need either a
+third-party crypto library or shelling out to `openssl` at startup, both
+of which break this range's zero-dependency, single-file philosophy for a
+detail that's orthogonal to the actual bug — anonymous-auth leaking this
+exact response shape is the same vulnerability regardless of which
+transport carries it, so the demo runs over plain HTTP on the main port.
 
 ## JWT testing, and a real false-positive class it surfaced
 

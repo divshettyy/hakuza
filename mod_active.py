@@ -70,6 +70,7 @@ import math
 import difflib
 import hashlib
 import secrets
+import warnings
 import statistics
 import concurrent.futures
 import base64
@@ -1831,6 +1832,88 @@ def _test_default_credentials(ctx, parts, pairs, baseline):
 
 
 # ---------------------------------------------------------------------------
+# Exposed Kubernetes / kubelet management API (runs once per target)
+# ---------------------------------------------------------------------------
+#
+# A genuine container/cluster ESCAPE (breaking out of a running container's
+# namespace) needs to run FROM INSIDE that container — not something a
+# remote HTTP tester can ever do, correctly out of scope for this engine.
+# But the kubelet API (:10250) and the Kubernetes API server (:6443) are
+# both plain HTTPS REST APIs, and "anonymous-auth left enabled" on either
+# is a real, well-known, historically common finding (CIS Kubernetes
+# Benchmark 4.2.1, and a mainstay of real cloud pentests/bug bounty) — an
+# unauthenticated kubelet leaks full pod data (including mounted secrets
+# and env vars) via /pods, and its /run//<namespace>/<pod>/<container>
+# endpoint is a direct remote command execution primitive if reachable
+# without auth. That slice is genuinely testable the same way as any other
+# HTTP endpoint.
+# ---------------------------------------------------------------------------
+
+_K8S_API_URL_RE = re.compile(r":10250\b|:6443\b|/api/v1(?:/|$)|/pods\b", re.I)
+_K8S_PROBE_PATHS = ["/pods", "/api/v1/pods", "/api/v1/namespaces"]
+
+
+def _test_exposed_k8s_api(ctx, target_url):
+    if not _K8S_API_URL_RE.search(target_url):
+        return
+    parts = urlsplit(target_url)
+    base = f"{parts.scheme}://{parts.netloc}"
+
+    for probe_path in _K8S_PROBE_PATHS:
+        if ctx.budget.exhausted():
+            return
+        time.sleep(ctx.delay)
+        ctx.budget.spend()
+        try:
+            # Kubelet/API-server certs are near-universally self-signed —
+            # verify=False is required to even connect, not a corner cut.
+            # Suppress the resulting urllib3 warning explicitly rather
+            # than letting it spam the console on every probe.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                resp = requests.get(base + probe_path, timeout=ctx.timeout, verify=False,
+                                    headers=_UA_HEADERS)
+        except Exception:
+            continue
+        if resp.status_code != 200:
+            continue
+        body = resp.text or ""
+        # Real leaked cluster data has this shape regardless of which
+        # probe path answered — a genuine PodList/NamespaceList, not a
+        # generic 200 OK.
+        leaked = ('"kind"' in body and '"items"' in body) or '"PodList"' in body
+
+        if leaked:
+            _persist(
+                ctx,
+                title=f"Exposed unauthenticated Kubernetes API ({probe_path})",
+                severity="critical",
+                category="Exposed Kubernetes/Kubelet API",
+                url=base + probe_path, param="(no authentication required)", payload=probe_path,
+                description=(
+                    f"Requesting {probe_path} with no authentication at all returned real "
+                    f"cluster data (a genuine PodList/NamespaceList response shape, not a "
+                    f"generic page) — consistent with anonymous-auth being left enabled on "
+                    f"the kubelet or Kubernetes API server. If this is the kubelet API "
+                    f"specifically, its /run or /exec endpoints are typically reachable the "
+                    f"same way, which is a direct remote command execution primitive, not "
+                    f"just an information leak."
+                ),
+                baseline_snippet="N/A (unauthenticated-access check, no body comparison)",
+                mutated_snippet=_ctx_snippet(body, "", maxlen=500),
+                impact=("Full cluster reconnaissance (every pod, its images, mounted secret "
+                       "names, and environment variables) with zero credentials, and — if "
+                       "this is the kubelet API — likely remote code execution inside any "
+                       "pod on this node via its exec/run endpoints."),
+                remediation=("Set --anonymous-auth=false on every kubelet, and enforce RBAC "
+                            "with no anonymous/system:unauthenticated bindings on the API "
+                            "server. Never expose either directly to the internet — restrict "
+                            "to the cluster's internal network only."),
+            )
+            return
+
+
+# ---------------------------------------------------------------------------
 # HTTP Request Smuggling (runs once per target) — the one check in this
 # file that abandons the `requests` library entirely for raw sockets,
 # since smuggling is fundamentally about ambiguous request framing
@@ -2866,6 +2949,9 @@ def cmd_active(args, console) -> None:
 
         if not budget.exhausted():
             _test_smuggling(ctx, target_url)
+
+        if not budget.exhausted():
+            _test_exposed_k8s_api(ctx, target_url)
 
     console.print()
     console.print(Panel(
