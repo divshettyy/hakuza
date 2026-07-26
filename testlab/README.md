@@ -304,6 +304,96 @@ query-parameter test URL, so exactly one live payload exists per
 navigation. Re-verified: the same PoC now reproduces deterministically
 across 5 consecutive standalone runs.
 
+## An independent adversarial audit, and 9 real bugs it found
+
+After the DOM-XSS check landed, a separate, read-only subagent was set loose
+on `mod_active.py` with one job: try to break every check that had been
+built most recently, using the exact bug taxonomy this file already
+documents (rich-markup escaping gaps, marker/signal collisions, confounds
+from the test mechanism itself, generic PoCs that can't reproduce a
+non-body-substring finding, false-positive gates that don't actually gate)
+as its checklist. It found 9 real issues, none hypothetical, all
+independently re-verified against this range before being fixed:
+
+- **`--jwt` mode bypassed scope and had no rate limiting at all.** Unlike
+  every other `hakuza active` mode, `--jwt` doesn't discover its own
+  targets — and the scope-guard + budget/rate-limiting wiring that every
+  other mode gets automatically had simply never been threaded into it.
+  Fixed and re-verified directly against this range: `hakuza active
+  "http://example.com/api/profile" --jwt <token>` (a target outside any
+  reasonable engagement's scope) is now refused before a single request
+  goes out; `/api/profile` in-scope still correctly finds both real bugs.
+- **A raw-socket exception could crash the whole run.** `_raw_send_and_time`
+  (the smuggling check's raw-socket helper) had `sendall()`/`settimeout()`
+  sitting *outside* its own try/except, despite the docstring claiming
+  "never raises" — a `ConnectionResetError` from a deliberately-malformed
+  smuggling probe could have killed the entire `hakuza active` run,
+  including every other finding already gathered. Fixed by moving both
+  calls inside the guarded block.
+- **Several categories' auto-generated Python PoC was structurally broken**
+  — CORS/CRLF/open redirect need to send/inspect *headers*, not body
+  content the generic template checks; time-based SQLi/cmdi prove
+  themselves via elapsed time, not body text; GraphQL's `"Leaked types:
+  ..."` evidence string is a label this code invented, never real server
+  output. Three new dedicated generators (mirroring the existing
+  race-condition/smuggling/DOM-XSS pattern) fixed all five; re-run against
+  this range, every one of them now genuinely reproduces its finding
+  standalone — confirmed by executing each generated script directly
+  against a live `vulnerable_site.py` and checking for `[PASS]`.
+- **Default-credential testing could false-positive off its own lockout.**
+  `/admin/login`'s 8-pair credential list runs sequentially against the
+  same username; a target that locks the account partway through and
+  returns 200 with lockout wording (matching neither the existing
+  denial-phrase nor failure-indicator patterns) would have been misread as
+  "credentials accepted." Fixed by teaching the failure-indicator pattern
+  to recognize lockout/rate-limit phrasing too.
+- **The Kubernetes-API trigger regex was too broad, and its leak check too
+  loose.** It originally matched a bare `/api/v1` prefix — any
+  conventionally-versioned REST API, not just Kubernetes — and treated any
+  response containing the substrings `"kind"` and `"items"` as a leak, both
+  common key *names* in ordinary list APIs. Tightened to genuinely
+  Kubernetes-specific paths/ports and a real JSON-shape check against a
+  `PodList`/`NamespaceList`/etc. allow-list; `/pods` on this range still
+  fires correctly, and the tightened regex no longer risks firing on an
+  arbitrary `/api/v1/...` endpoint elsewhere in a real `--all` run.
+- **The UNION-extraction marker filter was blunter than it needed to be.**
+  It rejected any extracted value containing an apostrophe, pipe, paren, or
+  plus *anywhere* — which would have false-negatived on real extracted data
+  like an MSSQL `@@version` string full of parens, or a username like
+  "O'Brien". Rewritten to check only the marker span's *boundary* (every
+  vendor's concat syntax wraps the raw, unevaluated marker in a leading and
+  trailing quote — the same adjacency idea already used elsewhere in this
+  file), which is precise instead of blunt. Re-verified against `/product`:
+  extraction of the SQLite version and table names still works unchanged.
+- **JWT similarity thresholds could drift on ordinary dynamic content.**
+  `_looks_authenticated`'s fixed 0.7/0.95 cutoffs diff whole response
+  bodies — a timestamp, nonce, or regenerated session id sitting next to an
+  otherwise-identical body could push a genuinely-unchanged comparison past
+  either threshold. Fixed by stripping ISO timestamps and long hex/token
+  spans before diffing; both JWT checks against this range still fire
+  correctly with the added normalization.
+- **The SSTI probe was a coincidence magnet.** A static `{{7*7}}` → "49"
+  check had no ambiguity gate at all — any unrelated dynamic content
+  containing "49" (a price, a view count) would satisfy it and go straight
+  to critical. Switched to two random two-digit operands per run (a
+  distinctive, hard-to-coincide-with product) and routed an ambiguous hit
+  through the same AI-escalation CONFIRMED/LIKELY/manual-confirmation-lead
+  pattern boolean-blind SQLi already uses. `--no-ai` runs against `/greet`
+  now correctly downgrade to a "needs manual confirmation" medium instead
+  of an unconditional critical; re-verified this is exactly what happens.
+- **A confirmed NoSQLi finding silently skipped the stored-XSS check on the
+  same parameter.** Step 9's `return` (instead of `break`) exited the
+  entire per-parameter loop, so a parameter vulnerable to both NoSQLi and
+  stored XSS would never get its step-10 check run at all. Changed to
+  `break`.
+
+Full regression after all nine fixes: every endpoint in this range re-run
+end to end (`--depth deep`, both with and without `--no-ai`), plus `--jwt`
+against `/api/profile` and `/api/kid-profile`, plus the negative controls
+(`/domxss-safe`, an out-of-scope `--jwt` target) — all findings this range
+is designed to produce still fire, zero new false positives, and every
+rewired PoC script independently reproduces its finding when run standalone.
+
 ## Extending this range
 
 Each endpoint is a small, independent method on `Handler` in
