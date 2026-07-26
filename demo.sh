@@ -58,7 +58,9 @@ python3 hakuza.py scope --add "http://scanme.nmap.org/*"
 pause
 
 announce "Step 2 — Run the full autopilot pipeline, unattended"
-printf "  recon -> wayback -> secrets -> scan -> ${DIM}(AI triage/chain if a key is set)${RESET} -> report\n"
+printf "  recon -> takeover -> wayback -> secrets -> scan -> ${DIM}(AI triage/chain if a key is set)${RESET} -> report\n"
+printf "  ${DIM}(takeover: subdomain-takeover scan, auto-saves confirmed findings — highest${RESET}\n"
+printf "  ${DIM}value-per-effort bug class on bounty programs)${RESET}\n"
 printf "  ${DIM}(real network I/O — typically 2-5 minutes end to end, mostly the katana crawl)${RESET}\n\n"
 show_cmd "hakuza autopilot --profile quick"
 python3 hakuza.py autopilot --profile quick
@@ -78,6 +80,17 @@ if [[ -n "$LATEST_HTML" ]]; then
 else
     printf "  ${DIM}(no report file found — check the autopilot output above)${RESET}\n"
 fi
+pause
+
+announce "Step 5 — The web dashboard"
+printf "  Same engagement, same findings, rendered live in a browser instead of\n"
+printf "  a terminal — click-through engagement cards, risk gauge, findings table,\n"
+printf "  finding detail. This one's worth showing in its own window rather than\n"
+printf "  backgrounded off this script (cleaner to kill, no orphaned process to\n"
+printf "  chase down afterward). In a second terminal, right now:\n\n"
+show_cmd "hakuza serve"
+printf "  Opens ${BOLD}http://127.0.0.1:7373${RESET} directly (add --no-browser to skip that).\n"
+printf "  Engagement '${BOLD}%s${RESET}' will already be there — click into it.\n" "$DEMO_ENGAGEMENT"
 
 printf "\n"
 divider
