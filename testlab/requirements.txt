@@ -1,0 +1,9 @@
+# Optional. Every endpoint on this practice range except /xmlpreview and
+# /xmlpreview-safe runs with zero third-party dependencies (stdlib only).
+# lxml is needed specifically because Python's own stdlib XML parsers
+# (ElementTree, minidom, sax — all built on expat) structurally cannot be
+# configured to resolve external entities at all, so demonstrating a real
+# XXE vulnerability requires a parser that CAN be misconfigured that way.
+# See the /xmlpreview docstring in vulnerable_site.py for the full
+# rationale.
+lxml>=5.0.0

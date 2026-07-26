@@ -8,8 +8,18 @@ each on its own clearly-labeled endpoint. This exists so the tool can be
 validated safely and legally against a target you own, instead of against
 someone else's real infrastructure.
 
-Zero third-party dependencies — stdlib only (http.server + sqlite3) — so it
-runs anywhere Python 3 runs, with nothing to `pip install`.
+Stdlib only (http.server + sqlite3) for every endpoint but one — so it runs
+anywhere Python 3 runs, with nothing to `pip install`, except for the XXE
+demo specifically. That one is a genuine structural exception, not a
+convenience shortcut: Python's own stdlib XML parsers (ElementTree, minidom,
+sax — all built on expat) cannot be configured to resolve external entities
+at all, a hard safety property of the language's own standard library, not
+a choice this range is making. Demonstrating a real XXE vulnerability at all
+needs a parser that CAN be misconfigured that way — lxml is the realistic,
+standard choice (mirrors how real-world Java/PHP/Python apps built on
+libxml2-backed parsers actually get this wrong). Optional import: every
+other endpoint works with zero dependencies if lxml isn't installed; only
+/xmlpreview and /xmlpreview-safe need it (`pip install lxml`).
 
 *** DO NOT expose this to any network beyond localhost. It is intentionally
 *** broken. It binds to 127.0.0.1 only and refuses to be told otherwise.
@@ -49,6 +59,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+try:
+    from lxml import etree as _lxml_etree
+    HAS_LXML = True
+except ImportError:
+    HAS_LXML = False
 
 # ---------------------------------------------------------------------------
 # In-memory "database" — real SQLite, real string-concatenated queries, so
@@ -350,6 +366,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._fetch(qs)
             elif path == "/fetch-safe":
                 self._fetch_safe(qs)
+            elif path == "/xmlpreview":
+                self._xmlpreview(qs)
+            elif path == "/xmlpreview-safe":
+                self._xmlpreview_safe(qs)
             elif re.match(r"^/user/\d+/profile$", path):
                 self._profile(path, qs)
             elif re.match(r"^/order/[0-9a-f-]{36}$", path, re.I):
@@ -425,6 +445,12 @@ class Handler(BaseHTTPRequestHandler):
               for the cloud-metadata-credential-theft variant; see also
               <a href="/fetch-safe?url=http://example.com/">/fetch-safe</a>, the
               scheme/host-allowlisted negative control)</li>
+          <li><a href="/xmlpreview?data=%3C%3Fxml+version%3D%221.0%22%3F%3E%3C!DOCTYPE+r+%5B%3C!ENTITY+x+SYSTEM+%22file%3A%2F%2F%2Fetc%2Fpasswd%22%3E%5D%3E%3Cr%3E%26x%3B%3C%2Fr%3E">/xmlpreview?data=&lt;xxe payload&gt;</a>
+              &mdash; XXE (needs <code>pip install lxml</code> &mdash; see
+              testlab/requirements.txt; real external-entity resolution via
+              lxml's resolve_entities=True, genuinely reads /etc/passwd; see also
+              <a href="/xmlpreview-safe">/xmlpreview-safe</a>, the
+              resolve_entities=False negative control)</li>
         </ul>
         """
         self._send(200, _page("HAKUZA Practice Range", body))
@@ -932,6 +958,56 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, _page("Fetch result", f"<pre>{html.escape(content)}</pre>"))
         except (urllib.error.URLError, ValueError, OSError) as e:
             self._send(502, _page("Fetch failed", f"<p>Could not fetch that URL: {html.escape(str(e))}</p>"))
+
+    # -- /xmlpreview?data= ----------------------------------------------------
+    # Real XXE: a "preview submitted XML" feature (config validators, legacy
+    # XML-RPC/SOAP-over-GET endpoints, and API request-preview tools are all
+    # real instances of this pattern) that parses the submitted XML with
+    # lxml's resolve_entities=True -- the entire bug. When the submitted XML
+    # declares an external entity, lxml genuinely fetches/reads it during
+    # parsing and the expanded content becomes part of the parsed tree,
+    # which this handler then echoes back -- a real, unmocked entity
+    # expansion, not a scripted fake.
+    def _xmlpreview(self, qs):
+        data = qs.get("data", [""])[0]
+        if not HAS_LXML:
+            self._send(501, _page(
+                "XML preview",
+                "<p>lxml is not installed -- run <code>pip install lxml</code> "
+                "(see testlab/requirements.txt) to exercise this endpoint. Every "
+                "other endpoint on this range works without it.</p>",
+            ))
+            return
+        try:
+            parser = _lxml_etree.XMLParser(resolve_entities=True, no_network=True)
+            tree = _lxml_etree.fromstring(data.encode("utf-8", errors="replace"), parser=parser)
+            content = "".join(tree.itertext())
+            self._send(200, _page("XML preview", f"<pre>{html.escape(content)}</pre>"))
+        except _lxml_etree.XMLSyntaxError as e:
+            self._send(400, _page("XML preview", f"<p>Could not parse that XML: {html.escape(str(e))}</p>"))
+
+    # -- /xmlpreview-safe?data= -----------------------------------------------
+    # Same feature, same page shape, EXCEPT resolve_entities=False (lxml's
+    # own default) and no_network=True/load_dtd=False -- external entities
+    # are never resolved, inert by construction. Negative control for the
+    # XXE check, same role /fetch-safe and /domxss-safe play for SSRF and
+    # DOM-XSS.
+    def _xmlpreview_safe(self, qs):
+        data = qs.get("data", [""])[0]
+        if not HAS_LXML:
+            self._send(501, _page(
+                "XML preview (safe)",
+                "<p>lxml is not installed -- run <code>pip install lxml</code> "
+                "to exercise this endpoint.</p>",
+            ))
+            return
+        try:
+            parser = _lxml_etree.XMLParser(resolve_entities=False, no_network=True, load_dtd=False)
+            tree = _lxml_etree.fromstring(data.encode("utf-8", errors="replace"), parser=parser)
+            content = "".join(tree.itertext())
+            self._send(200, _page("XML preview (safe)", f"<pre>{html.escape(content)}</pre>"))
+        except _lxml_etree.XMLSyntaxError as e:
+            self._send(400, _page("XML preview (safe)", f"<p>Could not parse that XML: {html.escape(str(e))}</p>"))
 
     # -- /user/<id>/profile ------------------------------------------------
     # Real IDOR: no session/auth of any kind — whichever numeric ID is in

