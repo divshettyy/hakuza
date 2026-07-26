@@ -3238,6 +3238,24 @@ def _test_cache_deception(ctx, target_url, baseline):
     parts = urlsplit(target_url)
     if _CACHE_DECEPTION_STATIC_EXT_RE.search(parts.path):
         return  # already a real static-asset path — not a deception target
+    # Scoped to HTML pages — the classic web cache deception scenario is a
+    # personalized HTML page cached and served to other users. Plain JSON/
+    # text API endpoints are a different, less classically-described risk,
+    # and skipping them cuts a real source of noise: a target whose
+    # non-HTML endpoint happens to return byte-identical content for any
+    # path (a bare health-check responder, for instance — found directly
+    # against this project's own raw-socket smuggling demo, which returns
+    # a fixed "OK" text/plain body regardless of path) would otherwise
+    # produce a technically-true but low-value "routing confusion" lead on
+    # a target that was never a meaningful subject for this check. The
+    # same reasoning also applies to a real SPA's client-side-routed shell
+    # (deliberately identical HTML for every route, a normal pattern, not
+    # a bug) — this gate doesn't fully solve that case, but scoping to
+    # HTML at least keeps the check aimed at what it's actually meant to
+    # find.
+    content_type = baseline["headers"].get("Content-Type", "")
+    if "html" not in content_type.lower():
+        return
     budget, delay, timeout = ctx.budget, ctx.delay, ctx.timeout
 
     # Two classic, independent path-confusion techniques: an extra path
