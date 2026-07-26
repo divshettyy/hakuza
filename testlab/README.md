@@ -543,6 +543,27 @@ which is also the more realistic shape for a genuine cache-deception
 target in the first place (a page that's supposed to look effectively
 static to a cache, not one that visibly varies per request).
 
+A third issue surfaced later, found during a full whole-session
+regression run against every endpoint on this range — including the
+raw-socket smuggling demo on port 9912, whose handler returns a fixed
+`"OK"` `text/plain` body regardless of path (it never parses the request
+line at all). The cache-deception check's routing-confusion signal fired
+against it: technically true (the response IS byte-identical for any
+path), correctly downgraded to a "lead" rather than falsely "confirmed"
+(no `Cache-Control` header at all on that response), but a real, low-
+value false lead against a target that was never a meaningful subject
+for this check. More importantly, the SAME signal would fire against any
+real target's plain JSON/text API endpoints, and against a legitimate
+single-page app's client-side-routed shell (deliberately identical HTML
+for every route — a normal, correct pattern, not a bug). Web cache
+deception's classic scenario is specifically a personalized HTML *page*
+getting cached and served to other users, not an arbitrary API response
+— so the check is now gated on the baseline response's `Content-Type`
+actually containing `html` before it runs at all. Verified directly: the
+false lead against the smuggling demo is gone, `/dashboard` still
+confirms correctly, and `/api/account`/`/api/partner` (both JSON) are
+unaffected.
+
 ## Extending this range
 
 Each endpoint is a small, independent method on `Handler` in
