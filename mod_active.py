@@ -916,6 +916,7 @@ def _test_param(ctx, parts, pairs, pname, baseline):
     orig_value = dict(pairs).get(pname, "")
 
     # --- 1. Reflection probe (XSS) ---
+    xss_confirmed = False
     if budget.exhausted():
         return
     canary = f"hkz{secrets.token_hex(6)}"
@@ -932,6 +933,7 @@ def _test_param(ctx, parts, pairs, pname, baseline):
                 resp2 = _polite_get(budget, delay, url2, timeout)
                 body2 = (resp2.text if resp2 else "") or ""
                 if resp2 is not None and script_payload in body2:
+                    xss_confirmed = True
                     _persist(
                         ctx,
                         title=f"Reflected XSS via '{pname}' parameter",
@@ -967,6 +969,64 @@ def _test_param(ctx, parts, pairs, pname, baseline):
 
     if budget.exhausted():
         return
+
+    # --- 1b. HTTP Parameter Pollution — reflected-XSS bypass (only if step
+    # 1's plain single-value probe did NOT already confirm) ---
+    # Sends the SAME parameter name TWICE in one request — once with a
+    # benign placeholder, once with a working <script> payload — in both
+    # orderings, since real backends disagree about which occurrence of a
+    # duplicated parameter is authoritative (PHP's $_GET uses the LAST
+    # occurrence by default; many WAFs and framework-level validators only
+    # ever inspect the FIRST). If a validation layer checks one occurrence
+    # while the application itself renders the other, this bypasses it —
+    # a classic, real HPP technique. Not a new signal: reuses the exact
+    # same "genuinely executable, unescaped payload present in the live
+    # response" certainty step 1 already established, just a new delivery
+    # mechanism for it, which is why this only runs when the single-value
+    # version didn't already find the same thing directly.
+    if not xss_confirmed and not budget.exhausted():
+        hpp_canary = f"hkzhpp{secrets.token_hex(6)}"
+        hpp_payload = f"<script>{hpp_canary}alert(1)</script>"
+        other_pairs = [(k, v) for k, v in pairs if k != pname]
+        for ordering, dup_pairs in (
+            ("payload occurrence first, benign second", [(pname, hpp_payload), (pname, orig_value)]),
+            ("benign occurrence first, payload second", [(pname, orig_value), (pname, hpp_payload)]),
+        ):
+            if budget.exhausted():
+                return
+            url_hpp = _build_url(parts, other_pairs + dup_pairs)
+            resp_hpp = _polite_get(budget, delay, url_hpp, timeout)
+            body_hpp = resp_hpp.text or "" if resp_hpp is not None else ""
+            if resp_hpp is not None and hpp_payload in body_hpp:
+                _persist(
+                    ctx,
+                    title=f"Reflected XSS via HTTP Parameter Pollution on '{pname}' parameter",
+                    severity="high",
+                    category="Cross-Site Scripting (Reflected)",
+                    url=url_hpp, param=pname, payload=hpp_payload,
+                    description=(
+                        f"Sending '{pname}' TWICE in the same request ({ordering}) caused a "
+                        f"working <script> payload to come back unescaped in the live "
+                        f"response — even though the identical payload sent as a single "
+                        f"value on this parameter was not confirmed exploitable. Consistent "
+                        f"with a validation or WAF layer inspecting only one occurrence of a "
+                        f"duplicated parameter while the application itself uses the other "
+                        f"to build the response: a classic HTTP Parameter Pollution bypass."
+                    ),
+                    baseline_snippet=_ctx_snippet(baseline["body"], ""),
+                    mutated_snippet=_ctx_snippet(body_hpp, hpp_payload),
+                    impact=("Same impact as reflected XSS — arbitrary JavaScript execution in "
+                           "victims' browsers — but reached via a technique that a validation "
+                           "layer checking only a single parameter occurrence would miss "
+                           "entirely. The site may believe itself protected when it is not."),
+                    remediation=("Reject requests containing duplicate parameter names outright "
+                                "(most frameworks support a strict-parsing mode for this), or "
+                                "ensure every validation layer and the application itself agree "
+                                "on exactly which occurrence of a duplicated parameter is "
+                                "authoritative."),
+                )
+                break  # one confirmed HPP bypass is enough evidence for this
+                       # parameter; steps 2-12 below still need to run
 
     # --- 2. SQL injection — error-based ---
     sqli_confirmed = False

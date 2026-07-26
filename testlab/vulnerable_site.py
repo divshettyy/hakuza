@@ -370,6 +370,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._xmlpreview(qs)
             elif path == "/xmlpreview-safe":
                 self._xmlpreview_safe(qs)
+            elif path == "/hppdemo":
+                self._hppdemo(qs)
+            elif path == "/hppdemo-safe":
+                self._hppdemo_safe(qs)
             elif re.match(r"^/user/\d+/profile$", path):
                 self._profile(path, qs)
             elif re.match(r"^/order/[0-9a-f-]{36}$", path, re.I):
@@ -1008,6 +1012,40 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, _page("XML preview (safe)", f"<pre>{html.escape(content)}</pre>"))
         except _lxml_etree.XMLSyntaxError as e:
             self._send(400, _page("XML preview (safe)", f"<p>Could not parse that XML: {html.escape(str(e))}</p>"))
+
+    # -- /hppdemo?msg= --------------------------------------------------------
+    # Real HTTP Parameter Pollution: a genuinely common split-validation
+    # bug pattern, not contrived for this range. The blocklist filter reads
+    # the FIRST occurrence of a duplicated query parameter
+    # (qs["msg"][0] — Python's urllib.parse.parse_qs preserves every
+    # occurrence in order), but the rendering code reads the LAST
+    # occurrence (qs["msg"][-1]) to build the page. Send msg once with a
+    # value that passes the filter and again with a real payload, and the
+    # filter checks the first while the page renders the second — a real,
+    # if simplified, mirror of how frameworks/WAFs and application code
+    # can each pick a different occurrence of the same duplicated
+    # parameter in production.
+    def _hppdemo(self, qs):
+        values = qs.get("msg", [""])
+        first = values[0]
+        last = values[-1]
+        if re.search(r"<script", first, re.I):
+            self._send(200, _page("HPP demo", "<p>Blocked: message contains a script tag.</p>"))
+            return
+        self._send(200, _page("HPP demo", f"<p>You said: {last}</p>"))
+
+    # -- /hppdemo-safe?msg= -----------------------------------------------
+    # Same feature, same page shape, EXCEPT both the filter and the
+    # renderer consistently use the SAME occurrence (the first) — so
+    # duplicating the parameter can't smuggle a second value past the
+    # filter. Negative control for the HPP check.
+    def _hppdemo_safe(self, qs):
+        values = qs.get("msg", [""])
+        first = values[0]
+        if re.search(r"<script", first, re.I):
+            self._send(200, _page("HPP demo (safe)", "<p>Blocked: message contains a script tag.</p>"))
+            return
+        self._send(200, _page("HPP demo (safe)", f"<p>You said: {first}</p>"))
 
     # -- /user/<id>/profile ------------------------------------------------
     # Real IDOR: no session/auth of any kind — whichever numeric ID is in
