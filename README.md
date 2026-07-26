@@ -16,9 +16,9 @@ hakuza scope --add "https://acme.com/*"
 hakuza autopilot --profile full
 ```
 
-One command, unattended: recon (subfinder/httpx/nmap) → wayback URL mining → secrets hunting → nuclei scan → AI triage → AI attack-chain reasoning → final report. Each phase is isolated — one tool failing doesn't kill the run — and a JSON run log with per-phase timing lands in the engagement directory when it's done. If scope is defined and you override the target, it refuses to run against anything outside it.
+One command, unattended: recon (subfinder/httpx/nmap) → subdomain takeover scan → wayback URL mining → secrets hunting → nuclei vulnerability scan → AI triage → AI attack-chain reasoning → final report. Each phase is isolated — one tool failing doesn't kill the run — and a JSON run log with per-phase timing lands in the engagement directory when it's done. If scope is defined and you override the target, it refuses to run against anything outside it.
 
-Without an `ANTHROPIC_API_KEY` set, the AI-dependent phases (analyze/chain/report) are skipped automatically rather than blocking on an interactive prompt — the recon/wayback/secrets/scan phases still run and persist real findings.
+Without an `ANTHROPIC_API_KEY` set, the AI-dependent phases (analyze/chain/report) are skipped automatically rather than blocking on an interactive prompt — the recon/takeover/wayback/secrets/scan phases still run and persist real findings.
 
 ## Engagement lifecycle
 
@@ -26,11 +26,12 @@ Without an `ANTHROPIC_API_KEY` set, the AI-dependent phases (analyze/chain/repor
 |---|---|
 | `hakuza init` / `status` / `list` / `switch` | Create and manage engagements |
 | `hakuza recon` | subfinder + httpx + nmap, AI subdomain prediction fallback |
+| `hakuza takeover` | Subdomain takeover scan — 15-service dangling-CNAME fingerprint DB (S3, GitHub Pages, Heroku, Azure, Netlify, etc.), confirmed hits auto-saved as findings |
 | `hakuza wayback` | waybackurls + katana historical URL mining, categorized and secret-scanned |
 | `hakuza secrets` | JS file + exposed-path secret hunting |
 | `hakuza fuzz` | Smart ffuf wrapper — dirs/params/api/vhosts, tech-aware wordlist selection |
-| `hakuza scan` | nuclei scan, parsed and persisted as findings |
-| `hakuza autopilot` | All of the above, chained, unattended |
+| `hakuza scan` | nuclei scan, parsed and persisted as findings. `--profile vuln` runs a comprehensive vulnerability-class sweep — XSS, SQLi, NoSQLi, RCE, SSRF, SSTI, XXE, LFI, IDOR, CORS, JWT, CSRF, deserialization, open redirect, GraphQL, file upload, CRLF injection (`quick`=fast CVE/exposure triage, `full`=everything, `stealth`=vuln tags at a throttled request rate to avoid WAF/IDS alerting) |
+| `hakuza autopilot` | recon → takeover → wayback → secrets → scan → (AI triage/chain) → report, chained, unattended |
 | `hakuza import` | Import Nessus/Nuclei/Burp/CSV output |
 | `hakuza scope` | Add/check/list scope entries (glob-matched) |
 | `hakuza add` / `findings` / `update` | Manual findings CRUD |
