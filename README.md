@@ -72,6 +72,8 @@ Safety guardrails actually enforced: GET-only in v1, a hard request budget, rate
 
 **→ [`testlab/`](testlab/) is a matching vulnerable practice range** — one endpoint per vulnerability class above, plus negative controls, so every check here can be verified hands-on against a target you own.
 
+**→ [Every bug found and fixed while building this, chronologically](docs/BUGS_FOUND_AND_FIXED.md)**
+
 ## Web dashboard (`hakuza serve`)
 
 ```bash
