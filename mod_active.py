@@ -3471,6 +3471,73 @@ def _test_cors(ctx, target_url):
                     "Access-Control-Allow-Origin", "equals", "null",
                 ),
             )
+            return
+
+    if budget.exhausted():
+        return
+    # Third probe: subdomain-prefix confusion. The two probes above only
+    # ever catch a target that reflects a COMPLETELY arbitrary origin —
+    # the wide-open case. A validator that actually tries to restrict
+    # Origin to "this app's own host" but does it with a naive
+    # origin.startswith("https://" + trusted_host) check (real, common)
+    # instead of properly parsing and comparing the resolved host is
+    # defeated by an attacker registering ANY domain that happens to
+    # start with the trusted host as a literal string prefix — here,
+    # {trusted_host}.hakuza-cors-canary.invalid, a subdomain of an
+    # attacker-owned domain, genuinely registrable by anyone, not a
+    # hypothetical. Same "confirmed content match" certainty as the two
+    # probes above (Access-Control-Allow-Origin echoing this exact,
+    # unique value back), just a different, more targeted delivery.
+    # A realistic same-origin validator almost certainly checks against
+    # whatever scheme the app is actually served over, not a hardcoded
+    # one — use the target's own scheme, not an assumed https://.
+    target_parts = urlsplit(target_url)
+    trusted_host = target_parts.netloc
+    prefix_bypass_origin = f"{target_parts.scheme}://{trusted_host}.hakuza-cors-canary.invalid"
+    resp_prefix = _probe(prefix_bypass_origin)
+    if resp_prefix is not None:
+        acao = resp_prefix.headers.get("Access-Control-Allow-Origin", "")
+        acac = resp_prefix.headers.get("Access-Control-Allow-Credentials", "").lower() == "true"
+        if acao == prefix_bypass_origin:
+            _persist(
+                ctx,
+                title="CORS misconfiguration — subdomain-prefix validation bypass",
+                severity="critical" if acac else "high",
+                category="CORS Misconfiguration",
+                url=target_url, param="Origin header", payload=prefix_bypass_origin,
+                description=(
+                    f"Sending Origin: {prefix_bypass_origin} — a domain that merely "
+                    f"STARTS WITH this app's own trusted host as a literal string "
+                    f"prefix, but is otherwise a completely attacker-registrable domain "
+                    f"— caused the server to reflect it back verbatim in "
+                    f"Access-Control-Allow-Origin. Consistent with a validator checking "
+                    f"origin.startswith(trusted_origin) instead of properly parsing and "
+                    f"comparing the Origin header's actual resolved host: unlike the "
+                    f"fully-arbitrary-origin probe, a plain unrelated origin was "
+                    f"correctly rejected here, but this specific prefix-shaped one was "
+                    f"not."
+                    + (
+                        " Access-Control-Allow-Credentials: true was also present."
+                        if acac else ""
+                    )
+                ),
+                baseline_snippet="N/A (header-only check, no body comparison)",
+                mutated_snippet=(f"Access-Control-Allow-Origin: {acao}\n"
+                                 f"Access-Control-Allow-Credentials: {acac}"),
+                impact=("Any website registered under a domain that happens to start "
+                       "with this app's own hostname as a string — trivially "
+                       "achievable by any attacker — can make cross-origin requests "
+                       "this validator believes are trusted."
+                       + (" Combined with credentials allowed, this is full "
+                          "cross-origin data theft from any logged-in victim." if acac else "")),
+                remediation=("Never validate Origin with a string prefix/suffix check. "
+                            "Parse the Origin header as a URL and compare its scheme and "
+                            "host exactly against an explicit allow-list."),
+                custom_poc_script=_gen_header_poc(
+                    target_url, "CORS Misconfiguration", {"Origin": prefix_bypass_origin}, True,
+                    "Access-Control-Allow-Origin", "equals", prefix_bypass_origin,
+                ),
+            )
 
 
 def _test_idor_heuristic(ctx, parts, baseline):

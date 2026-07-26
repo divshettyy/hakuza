@@ -340,6 +340,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._echo(qs)
             elif path == "/api/account":
                 self._api_account()
+            elif path == "/api/partner":
+                self._api_partner()
             elif path == "/login":
                 self._login(parts.query)
             elif path == "/admin/login":
@@ -422,6 +424,11 @@ class Handler(BaseHTTPRequestHandler):
           <li><a href="/api/account">/api/account</a>
               &mdash; CORS misconfiguration (reflects Origin + allows credentials — try
               curl -H "Origin: https://evil.example" to see it reflected back)</li>
+          <li><a href="/api/partner">/api/partner</a>
+              &mdash; CORS misconfiguration, subdomain-prefix bypass variant (correctly
+              rejects a plain unrelated Origin, but a naive origin.startswith() check
+              accepts "http://&lt;this-host&gt;.evil.example" — try
+              curl -H "Origin: http://127.0.0.1:9911.evil.example")</li>
           <li><a href="/login?username=admin&password=wrongpass">/login?username=&amp;password=</a>
               &mdash; NoSQL injection (try /login?username[$ne]=x&amp;password[$ne]=x
               to log in as admin without the real password)</li>
@@ -638,6 +645,27 @@ class Handler(BaseHTTPRequestHandler):
         if origin:
             headers["Access-Control-Allow-Origin"] = origin
         self._send(200, body, content_type="application/json", extra_headers=headers)
+
+    # -- /api/partner ---------------------------------------------------------
+    # A CORS validator that actually TRIES to restrict access, unlike
+    # /api/account above (which reflects any origin unconditionally) --
+    # but does it with a naive origin.startswith("http://" + this-host)
+    # string check instead of properly parsing the Origin header and
+    # comparing its resolved host. A plain unrelated origin is correctly
+    # rejected; a domain that merely STARTS WITH this app's own host as a
+    # literal string prefix (any domain of the shape
+    # "<this-host>.attacker-owned-domain.tld", genuinely registrable by
+    # anyone) is not.
+    def _api_partner(self):
+        origin = self.headers.get("Origin", "")
+        host = self.headers.get("Host", "")
+        body = '{"partner_id": "acme-financial", "api_quota_remaining": 8422}'
+        allowed_prefix = f"http://{host}"
+        if origin.startswith(allowed_prefix):
+            headers = {"Access-Control-Allow-Origin": origin, "Access-Control-Allow-Credentials": "true"}
+            self._send(200, body, content_type="application/json", extra_headers=headers)
+        else:
+            self._send(200, body, content_type="application/json")
 
     # -- /login?username=&password= ----------------------------------------
     # Real NoSQL injection: the raw query string is parsed with bracket
