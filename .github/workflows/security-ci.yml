@@ -1,4 +1,4 @@
-name: Jobs Test 4
+name: Jobs Test 5
 
 "on":
   push:
@@ -8,6 +8,8 @@ jobs:
   container-scan:
     name: "Container · Trivy Image Scan"
     runs-on: ubuntu-latest
-    if: hashFiles('Dockerfile') != ''
     steps:
-      - run: echo test
+      - uses: actions/checkout@v4
+      - name: Build image
+        if: hashFiles('Dockerfile') != ''
+        run: echo test
