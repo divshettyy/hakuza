@@ -129,6 +129,22 @@ Format: **Bug** — root cause → fix → how it was verified.
 |---|---|---|---|
 | 46 | Two stale self-test engagements (`domxss-selftest`, `hakuza-active-selftest`) left in `~/.hakuza/` from earlier verification work, never cleaned up | Removed from DB and disk | Confirmed empty `~/.hakuza/engagements/` |
 
+## Fifteenth pass: a declined item reconsidered (Python pickle deserialization)
+
+Not a bug fix, but worth logging in the same spirit — a decision to *not* build
+something is only as sound as the reasoning behind it. Deserialization had been
+declined twice, both times reasoning that there was "no reliable way to auto-identify a
+serialized-blob parameter without a false-positive-prone guess" — an assumption that
+was never actually tested. Reconsidered and checked directly: pickle's protocol-2+
+format has a specific 2-byte magic header, verified as a genuinely reliable gate
+(matches a real pickle blob, correctly rejects a JWT-shaped string and plain text)
+before writing any detector code. Built as step 13 in `_test_param`, proving RCE via
+the same bounded-sleep timing-gate technique the existing time-based SQLi/cmdi checks
+already use. See [`docs/TESTLAB_NOTES.md`](TESTLAB_NOTES.md#python-pickle-deserialization--a-declined-item-reconsidered-and-built)
+for the full story, including direct verification that the real attack payload hangs
+~4.0s against testlab's `/loadstate` and the identical payload against the JSON-based
+`/loadstate-safe` fails to parse in 9ms with zero execution.
+
 ## `pentest-ai-assistant` (secondary project)
 
 | # | Bug | Fix | Verified |
@@ -141,9 +157,12 @@ Format: **Bug** — root cause → fix → how it was verified.
 
 ## Declined (investigated, deliberately not built — not bugs, but worth tracking why)
 
+*Python pickle deserialization was on this list twice, then reconsidered and built in
+the fifteenth pass above — see that entry for why the original reasoning didn't hold
+up under direct testing.*
+
 | Item | Reason |
 |---|---|
 | Oracle SQLi UNION extraction | Requires a `FROM` clause on every SELECT including the injected UNION half — the shared column-count/visible-column probes don't support any vendor's `FROM` requirement today, real surgery not a dict entry. No Oracle instance available anywhere to verify a fix live. |
 | GraphQL→SQLi pivot | Would need hand-rolling real GraphQL query parsing — meaningfully more novel/fragile surface area than anything else in the engine. |
-| Deserialization (pickle, etc.) | No reliable way yet to auto-identify a serialized-blob parameter without a false-positive-prone guess. |
 | JWT `alg` case-variant bypass (`None`/`NONE`) | Tests a narrow, library-specific historical quirk — a "realistic" demo would mean writing a verifier with that exact flaw and testing against it, a much weaker validation loop than everything else built. |

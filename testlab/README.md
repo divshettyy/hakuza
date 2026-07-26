@@ -85,6 +85,8 @@ Drop `--no-ai` if you have `ANTHROPIC_API_KEY` set and want to see the AI escala
 | `/hppdemo-safe?msg=` | — (not vulnerable) | Filter and renderer consistently use the same occurrence | Negative control |
 | `/dashboard` (also `/dashboard/*`, `/dashboard;*`) | path (routing) | Greedy prefix routing serves the identical personalized page for any suffix, with `Cache-Control: public, max-age=3600` | Web Cache Deception |
 | `/dashboard-safe` | — (not vulnerable) | Exact-match routing only | Negative control |
+| `/loadstate?data=` | `data` | Real, unmocked `pickle.loads()` on client-supplied base64 data — no dependency needed, `pickle` is stdlib | Insecure Deserialization — a crafted payload's `__reduce__` genuinely calls `os.system('sleep 4')`, proven via real timing (`--depth deep`) |
+| `/loadstate-safe?data=` | — (not vulnerable) | Same feature via `json.loads()`, which can never invoke a callable | Negative control |
 
 ## Extending this range
 

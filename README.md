@@ -64,7 +64,7 @@ hakuza active --all --depth deep
 hakuza active "https://target.tld/api/profile" --jwt eyJ...
 ```
 
-**22+ vulnerability classes**, each with a real live-request signal (not a heuristic guess): reflected/stored/DOM-based XSS, HTTP Parameter Pollution, SQL injection (error/boolean/time-based) with UNION-based data extraction, SSTI, path traversal, open redirect (with 3 filter-bypass techniques), CRLF injection, SSRF (file:// + cloud metadata), XXE, IDOR, CORS misconfiguration (with a subdomain-prefix bypass), Web Cache Deception, NoSQL injection, race conditions, GraphQL introspection, default credentials, HTTP request smuggling, exposed Kubernetes/kubelet APIs, and JWT attacks (alg=none, weak secrets, `kid` path traversal).
+**23+ vulnerability classes**, each with a real live-request signal (not a heuristic guess): reflected/stored/DOM-based XSS, HTTP Parameter Pollution, SQL injection (error/boolean/time-based) with UNION-based data extraction, SSTI, path traversal, open redirect (with 3 filter-bypass techniques), CRLF injection, SSRF (file:// + cloud metadata), XXE, insecure deserialization (Python pickle, with real timing-based RCE proof), IDOR, CORS misconfiguration (with a subdomain-prefix bypass), Web Cache Deception, NoSQL injection, race conditions, GraphQL introspection, default credentials, HTTP request smuggling, exposed Kubernetes/kubelet APIs, and JWT attacks (alg=none, weak secrets, `kid` path traversal).
 
 Safety guardrails actually enforced: GET-only in v1, a hard request budget, rate limiting, bounded time-based payloads, no destructive payloads ever, and scope checking before every request.
 

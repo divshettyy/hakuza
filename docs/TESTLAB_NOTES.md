@@ -482,3 +482,40 @@ actually containing `html` before it runs at all. Verified directly: the
 false lead against the smuggling demo is gone, `/dashboard` still
 confirms correctly, and `/api/account`/`/api/partner` (both JSON) are
 unaffected.
+
+## Python pickle deserialization — a declined item reconsidered and built
+
+Deserialization was declined twice earlier in this project's history, both times with
+the same reasoning: "no reliable way to auto-identify a serialized-blob parameter
+without a false-positive-prone guess." That reasoning was never actually tested — it
+was an abstract objection, stated and accepted without verification. Reconsidered and
+checked directly before deciding again: Python pickle's protocol-2+ format starts with
+a 2-byte magic header (`0x80` followed by a protocol byte 2-5), which is specific
+enough (1-in-65536 by chance, before even requiring the value to be valid base64 in the
+first place) to be a genuinely reliable gate. Verified directly with a real pickle blob
+(matched), a JWT-shaped base64 string (correctly didn't match), and plain text
+(correctly didn't match) before writing a single line of detector code.
+
+`/loadstate?data=` hands a client-supplied base64 blob straight to `pickle.loads()` —
+standing in for a real, if bad, "restore my saved cart/session state" pattern some
+legacy apps genuinely use. No new dependency needed at all — `pickle` is stdlib, unlike
+XXE's `lxml` requirement, which made this actually simpler to build honestly than XXE
+was. The detector builds a real payload via `__reduce__` → `(os.system, ('sleep
+4',))` — the textbook pickle RCE technique, not invented for this project — and proves
+it the same way the existing time-based SQLi/cmdi checks do: a bounded sleep and the
+same statistical timing gate (`baseline_mean + max(3×stdev, 2.5s)`).
+
+Verified directly via curl before ever trusting the live detector: the real attack
+payload against `/loadstate` genuinely hangs ~4.0s (confirmed: `real 0m4.013s`) and the
+restored "state" rendered in the response is literally `0` — `os.system`'s actual
+return code, proof the call really executed, not a scripted fake. The identical payload
+against `/loadstate-safe` (which decodes with `json.loads()` instead) fails to parse in
+9 milliseconds with zero execution, since JSON can only ever produce inert data. Full
+regression confirmed no interference with `/xmlpreview`, which shares the parameter
+name `data` — its own XXE finding still fires correctly, no spurious deserialization
+false positive from the pickle gate matching against XML-shaped content.
+
+Worth remembering as a pattern for any future "declined" item in this project: a
+decision to not build something is only as good as the reasoning behind it, and if that
+reasoning was never actually tested, it's worth testing before treating the decision as
+final.

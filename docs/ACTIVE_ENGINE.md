@@ -147,6 +147,22 @@ common than POST-body XXE). Submits a DOCTYPE declaring an external entity point
 signature the path-traversal and SSRF `file://` checks use. No blind/out-of-band-DTD
 tier, same reasoning as blind SSRF.
 
+**Insecure Deserialization (Python pickle).** `--depth deep` only — needs a real timing
+side-channel, same gating as time-based SQLi/cmdi. Same "test only what the target
+already demonstrated it accepts" discipline as XXE, applied to a different format:
+only fires when a parameter's *own baseline value* already decodes to bytes matching
+pickle's protocol-2+ magic header (`0x80` + a protocol byte 2-5 — specific enough,
+1-in-65536 by chance before even requiring valid base64, that this is real evidence
+rather than a guess) — a "session state"/"cart"/"remember-me token" parameter that
+round-trips through `pickle.loads()` server-side, a genuine if bad real-world pattern.
+Builds a real payload via `__reduce__` → `(os.system, ('sleep 4',))` — the textbook
+pickle RCE technique — re-encoded in whichever base64 alphabet the target's own
+baseline value used, and proves RCE the exact same way the time-based SQLi/cmdi checks
+above do: a bounded sleep and the same statistical timing gate. Not a new risk category
+for the tool — the existing time-based command-injection check already sends a real,
+executing `sleep 4` if the target is vulnerable; this carries an identical safety
+profile via a different delivery mechanism.
+
 **Stored XSS.** A second, genuinely two-request check. Every other XSS check is
 single-request: send a payload, look at that same response. Stored XSS needs two —
 submit a payload once, then a COMPLETELY SEPARATE follow-up request that uses only the
@@ -316,7 +332,12 @@ confirmation prompt**.
 
 A few additions were investigated in depth and deliberately not built, because they
 couldn't clear the same "genuinely realistic, independently verifiable" bar everything
-above met:
+above met. One item — Python pickle deserialization — was declined this way in an
+earlier round, then reconsidered and built after the specific abstract objection (no
+reliable detection gate) was actually tested rather than assumed true: pickle's
+protocol magic bytes turned out to be a concrete, verifiable, low-false-positive
+signal. Worth remembering as a pattern — a declined item is worth revisiting if the
+stated reason was never directly tested.
 
 - **Oracle SQLi UNION extraction** — Oracle requires a `FROM` clause on every `SELECT`
   including the injected half of a `UNION`, which the shared column-count/visible-column
@@ -325,8 +346,6 @@ above met:
 - **GraphQL→SQLi pivot** — would need hand-rolling real GraphQL query parsing (nested
   field selections, arguments, aliases), meaningfully more novel and fragile surface
   area than anything else here.
-- **Deserialization (Python pickle, etc.)** — no reliable way yet to auto-identify a
-  serialized-blob parameter without a false-positive-prone guess.
 - **JWT `alg` case-variant bypass** (`None`/`NONE`) — tests a narrow, library-specific
   historical quirk; building a "realistic" demo for it would mean writing a verifier
   with that exact flaw and then testing against it, a much weaker validation loop than
