@@ -1,35 +1,24 @@
-name: Trigger Test
+name: Jobs Test 1
 
 "on":
   push:
     branches: [master, main, develop]
-  pull_request:
-    branches: [master, main]
-  schedule:
-    - cron: "0 2 * * *"
-  workflow_dispatch:
-    inputs:
-      target:
-        description: "Target domain/URL for a live HAKUZA autopilot run (authorized scope only)"
-        required: false
-        default: ""
-      profile:
-        description: "Autopilot scan profile"
-        required: false
-        default: "quick"
-        type: choice
-        options: [quick, full]
-
-permissions:
-  contents: read
-  security-events: write
-  pull-requests: write
-
-env:
-  PYTHON_VERSION: "3.11"
 
 jobs:
-  hello:
+  sast:
+    name: "SAST · Static Analysis"
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo test
+
+  dependency-audit:
+    name: "SCA · Dependency Audit"
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo test
+
+  secrets-scan:
+    name: "Secrets · Gitleaks + Trufflehog"
     runs-on: ubuntu-latest
     steps:
       - run: echo test
