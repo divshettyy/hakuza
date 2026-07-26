@@ -76,6 +76,20 @@ the CLI-generated HTML report look identical. It is **read-only** against the da
 and binds to `127.0.0.1` only; the Werkzeug debugger stays off unless `--debug` (or
 `HAKUZA_WEB_DEBUG=1`) is set explicitly.
 
+## End-to-end tests (`webapp/tests/test_e2e.py`)
+
+Real-browser tests for the web dashboard using [Playwright](https://playwright.dev/) (Chromium, headless) — the strongest practical proof that pages render correctly and that the stored-XSS fix holds, since it asserts on actual DOM/JS behavior rather than grepping raw HTML. The key test seeds a finding containing a literal `<script>alert(...)</script>` payload, visits it in a real Chromium engine, and asserts the browser's `dialog` event never fires (which it only does for a genuinely *executing* `alert()`) — a stronger check than any text-matching approach.
+
+```bash
+pip install -r webapp/tests/requirements.txt
+python3 -m playwright install chromium
+python3 -m pytest webapp/tests/test_e2e.py -v
+```
+
+The suite spins up `hakuza serve` on a dedicated port (7391), seeds two throwaway engagements through the real CLI, runs 8 tests (page rendering, click-through navigation, 404 handling, zero console errors, the XSS-execution proof, and report-link serving), and backs up/restores any pre-existing `~/.hakuza` state so it's safe to run against a real installation with real engagement data.
+
+On a root-less environment where `playwright install --with-deps` can't run `apt-get` (no sudo), Chromium's shared-library dependencies (`libnspr4`, `libnss3`, `libatk-1.0`, `libatk-bridge-2.0`, `libXdamage`, `libasound2`, `libatspi2.0`, `libxres1`) may need to be extracted manually via `dpkg -x <deb> <destdir>` from downloaded `.deb` packages and referenced via `LD_LIBRARY_PATH` before Chromium will launch. A real CI runner with root can just use `playwright install --with-deps chromium` instead.
+
 ## Architecture
 
 `hakuza.py` is the ~10k-line core (engagement DB, AI client, most commands). `mod_recon_plus.py` is loaded as a real Python import (`import mod_recon_plus`) rather than text-inlined, and resolves shared symbols from the running process lazily via `importlib.import_module("hakuza")` — this is the pattern used for `wayback`/`secrets`/`fuzz`/`wizard`/`scope`/`config`.
