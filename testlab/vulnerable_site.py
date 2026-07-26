@@ -32,7 +32,11 @@ manually seeding these URLs into the engagement's recon data — see README).
 """
 
 import argparse
+import base64
+import hashlib
+import hmac
 import html
+import json
 import os
 import re
 import sqlite3
@@ -108,6 +112,57 @@ _LOGIN_USERS = [
 # creates this exact window in a real app, widening it enough to reliably
 # demonstrate the race without needing hundreds of requests.
 _COUPON_REMAINING = {"WELCOME10": 1}
+
+# -- JWT target ---------------------------------------------------------
+# A real, working hand-rolled HS256 JWT issuer/verifier — no PyJWT
+# dependency needed to demonstrate the actual bugs, which are both
+# implementation mistakes, not library bugs: (1) trusting the token's own
+# declared "alg" header instead of enforcing one expected algorithm, and
+# (2) signing with a short, guessable secret. Both are real, extremely
+# common real-world JWT implementation bugs, not contrived for this range.
+_JWT_SECRET = "secret123"  # deliberately weak — this IS the bug, don't "fix" it
+
+
+def _b64url_encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def _b64url_decode(segment: str) -> bytes:
+    return base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4))
+
+
+def _jwt_issue(payload: dict) -> str:
+    header = {"alg": "HS256", "typ": "JWT"}
+    h = _b64url_encode(json.dumps(header, separators=(",", ":")).encode())
+    p = _b64url_encode(json.dumps(payload, separators=(",", ":")).encode())
+    sig = hmac.new(_JWT_SECRET.encode(), f"{h}.{p}".encode(), hashlib.sha256).digest()
+    return f"{h}.{p}.{_b64url_encode(sig)}"
+
+
+def _jwt_verify(token: str):
+    """Returns the payload dict if the token is accepted, None otherwise.
+    Deliberately vulnerable two ways: trusts the token's own "alg" header
+    (accepting "none" with no signature check at all) instead of enforcing
+    HS256 specifically, and verifies real HS256 signatures against a weak,
+    guessable secret."""
+    try:
+        parts = token.split(".")
+        if len(parts) < 2:
+            return None
+        header = json.loads(_b64url_decode(parts[0]))
+        payload = json.loads(_b64url_decode(parts[1]))
+    except Exception:
+        return None
+
+    alg = header.get("alg")
+    if alg == "none":
+        return payload  # the bug: no signature required at all
+    if alg == "HS256" and len(parts) == 3:
+        h, p, s = parts
+        expected = hmac.new(_JWT_SECRET.encode(), f"{h}.{p}".encode(), hashlib.sha256).digest()
+        if hmac.compare_digest(_b64url_encode(expected), s):
+            return payload
+    return None
 
 
 def _parse_nested_qs(query_string):
@@ -198,6 +253,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._login(parts.query)
             elif path == "/redeem":
                 self._redeem(qs)
+            elif path == "/api/token":
+                self._api_token()
+            elif path == "/api/profile":
+                self._api_profile()
             elif re.match(r"^/user/\d+/profile$", path):
                 self._profile(path, qs)
             elif re.match(r"^/order/[0-9a-f-]{36}$", path, re.I):
@@ -241,6 +300,10 @@ class Handler(BaseHTTPRequestHandler):
           <li><a href="/redeem?code=WELCOME10">/redeem?code=WELCOME10</a>
               &mdash; Race condition (one-time coupon, no lock around the read-check-write
               sequence &mdash; fire it many times at once and it redeems more than once)</li>
+          <li><a href="/api/token">/api/token</a> &rarr; <a href="/api/profile">/api/profile</a>
+              &mdash; JWT auth bypass (get a real token from /api/token, then try
+              hakuza active .../api/profile --jwt &lt;token&gt; &mdash; accepts alg=none
+              with no signature, and HS256 signed with the weak secret "secret123")</li>
         </ul>
         """
         self._send(200, _page("HAKUZA Practice Range", body))
@@ -424,6 +487,34 @@ class Handler(BaseHTTPRequestHandler):
             f"<h1>Success!</h1><p>10% discount applied using code "
             f"{html.escape(code)}.</p>",
         ))
+
+    # -- /api/token ---------------------------------------------------------
+    # Issues a real, correctly-signed JWT for a demo user — this is what a
+    # legitimate login flow would return. hakuza has no login flow of its
+    # own, so this stands in for "copy a real token out of your browser's
+    # dev tools" for testing purposes.
+    def _api_token(self):
+        token = _jwt_issue({"sub": "alice", "role": "user", "uid": 1000})
+        self._send(200, json.dumps({"token": token}), content_type="application/json")
+
+    # -- /api/profile ---------------------------------------------------
+    # Real JWT verification with two real bugs: trusts the token's own
+    # declared alg (accepting "none" with zero signature check), and
+    # verifies real HS256 signatures against a short, guessable secret.
+    def _api_profile(self):
+        auth = self.headers.get("Authorization", "")
+        token = auth[7:] if auth.lower().startswith("bearer ") else ""
+        payload = _jwt_verify(token) if token else None
+        if payload is None:
+            self._send(401, json.dumps({"error": "unauthorized"}),
+                       content_type="application/json")
+            return
+        self._send(200, json.dumps({
+            "username": payload.get("sub"),
+            "role": payload.get("role"),
+            "uid": payload.get("uid"),
+            "note": "authenticated profile data",
+        }), content_type="application/json")
 
     # -- /user/<id>/profile ------------------------------------------------
     # Real IDOR: no session/auth of any kind — whichever numeric ID is in

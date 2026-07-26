@@ -66,6 +66,7 @@ second opinion).
 | `/api/account` | `Origin` header | The request's own `Origin` is reflected verbatim into `Access-Control-Allow-Origin`, paired with `Access-Control-Allow-Credentials: true` | CORS Misconfiguration |
 | `/login?username=&password=` | `username`, `password` | Query string parsed with bracket notation (`username[$ne]=x` becomes a dict, not a string) and handed unsanitized to a naive "MongoDB-style" matcher | NoSQL Injection — both the per-parameter check (fires on `password` alone, since the baseline `username=admin` already matches for real) and the all-parameters check (the classic bypass: `/login?username[$ne]=x&password[$ne]=x` logs in as admin with no real credentials) |
 | `/redeem?code=` | `code` (path/behavior, not injection) | Read-then-write with no lock around a single-use coupon (1 use available); a 50ms sleep between the availability check and the decrement stands in for the real DB round-trip that creates this exact window in production apps | Race Condition — fire 10 concurrent requests and all 10 redeem successfully instead of 1 |
+| `/api/token` → `/api/profile` | `Authorization: Bearer` header | Real hand-rolled HS256 JWT issuer/verifier — trusts the token's own declared `alg` (accepts `none` with zero signature check) and verifies real HS256 signatures against a weak, guessable secret (`secret123`) | JWT — get a real token from `/api/token`, then `hakuza active .../api/profile --jwt <token>` finds both the alg=none bypass and the weak-secret HS256 forgery |
 
 ## Fixed: the IDOR heuristic now catches same-template IDORs
 
@@ -163,6 +164,32 @@ parameter alone produces the same apparent effect as the operator payload,
 the operator proved nothing, and the finding is correctly suppressed.
 Re-verified across all 8 endpoints after the fix: 10/10 real vuln classes
 confirm, zero false positives.
+
+## JWT testing, and a real false-positive class it surfaced
+
+`--jwt` is the one check that needs a real token handed to it — `/api/token`
+issues one, signed with the same weak secret `/api/profile` verifies against,
+standing in for "copy a real session token out of your browser." Get one and
+try both bypasses:
+
+```bash
+TOKEN=$(curl -s http://127.0.0.1:9911/api/token | python3 -c "import json,sys; print(json.load(sys.stdin)['token'])")
+hakuza active "http://127.0.0.1:9911/api/profile" --jwt "$TOKEN" --no-ai
+```
+
+Building this against `/api/account` (the CORS endpoint, which never checks
+`Authorization` at all) surfaced a real false-positive class: without a
+guard, both the alg=none and weak-secret checks "confirmed" a bypass against
+it — because an endpoint that doesn't check the token in the first place
+returns the same response with or without one, which trivially "passes" a
+check for "does the forged token's response resemble the real one." Fixed by
+comparing the REAL token's response against a genuinely unauthenticated
+request (no `Authorization` header at all) up front: if those two already
+look identical, the endpoint isn't gating on this token at all, and hakuza
+active now says so explicitly and skips both checks rather than reporting a
+bypass of nothing. Re-verified both directions: `/api/account` now correctly
+skips with a clear explanation, `/api/profile` still correctly finds both
+real bugs.
 
 ## Extending this range
 
