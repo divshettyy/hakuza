@@ -1606,7 +1606,18 @@ def _test_param(ctx, parts, pairs, pname, baseline):
                     return
                 url_m = _build_url(parts, _with_param(pairs, pname, meta_payload))
                 resp_m = _polite_get(budget, delay, url_m, timeout)
-                if resp_m is not None and _SSRF_METADATA_LEAK_RE.search(resp_m.text or ""):
+                body_m = resp_m.text or "" if resp_m is not None else None
+                match_m = _SSRF_METADATA_LEAK_RE.search(body_m) if body_m is not None else None
+                # Unlike the file:// tier's root:.*:0:0: signature above (specific
+                # enough that a baseline coincidence is negligible — the same
+                # signature path traversal's own check already trusts without a
+                # baseline check), terms like "instance-id"/"ami-id" are plausible
+                # on an entirely unrelated real page (a cloud-management dashboard,
+                # a DevOps blog post) — self-caught on review, not found live: the
+                # matched signature must be genuinely NEW relative to baseline, the
+                # same "present in mutated, absent from baseline" discipline every
+                # reflection-based check in this file already uses.
+                if match_m and match_m.group(0).lower() not in baseline["body"].lower():
                     _persist(
                         ctx,
                         title=f"Server-Side Request Forgery (cloud metadata access) via '{pname}' parameter",
@@ -1623,7 +1634,7 @@ def _test_param(ctx, parts, pairs, pname, baseline):
                             f"errors."
                         ),
                         baseline_snippet=_ctx_snippet(baseline["body"], ""),
-                        mutated_snippet=_ctx_snippet(resp_m.text or "", "", maxlen=500),
+                        mutated_snippet=_ctx_snippet(body_m, match_m.group(0), maxlen=500),
                         impact=("Cloud instance metadata frequently hands back temporary IAM "
                                "credentials with zero authentication to anything that can reach "
                                "the link-local address — a common path from a single "
