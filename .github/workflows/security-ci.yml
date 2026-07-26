@@ -1,16 +1,10 @@
-name: Jobs Test 3
+name: Jobs Test 4
 
 "on":
   push:
     branches: [master, main, develop]
 
 jobs:
-  sast:
-    name: "SAST · Static Analysis"
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo test
-
   container-scan:
     name: "Container · Trivy Image Scan"
     runs-on: ubuntu-latest
