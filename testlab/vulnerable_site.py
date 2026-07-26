@@ -86,6 +86,53 @@ os.makedirs(_DOCS_DIR, exist_ok=True)
 with open(os.path.join(_DOCS_DIR, "welcome.txt"), "w") as f:
     f.write("Welcome to the HAKUZA practice range document store.\n")
 
+# -- NoSQL injection target -------------------------------------------------
+# No MongoDB dependency needed to demonstrate the real bug: the vulnerable
+# behavior is the QUERY-STRING PARSING, not the storage engine. Frameworks
+# like Express's `qs` (and several PHP setups) turn `?username[$ne]=x` into
+# a nested {"username": {"$ne": "x"}} object by default — this mimics that
+# exact parsing, then a naive "MongoDB-style" matcher interprets the
+# resulting dict as operators. That combination — automatic bracket-to-
+# object parsing feeding straight into a query/match — is the actual root
+# cause of real-world NoSQLi, independent of which database is behind it.
+_LOGIN_USERS = [
+    {"username": "admin", "password": "Sup3rS3cret!2026"},
+]
+
+
+def _parse_nested_qs(query_string):
+    """a[b]=c -> {"a": {"b": "c"}} instead of a flat "a[b]" string key —
+    the exact parsing behavior that makes NoSQLi via query string possible."""
+    result = {}
+    for key, values in urllib.parse.parse_qs(query_string, keep_blank_values=True).items():
+        m = re.match(r"^([^\[]+)\[([^\]]+)\]$", key)
+        if m:
+            base, sub = m.group(1), m.group(2)
+            if not isinstance(result.get(base), dict):
+                result[base] = {}
+            result[base][sub] = values[0]
+        else:
+            result[key] = values[0]
+    return result
+
+
+def _mongo_style_match(stored_value, query_value):
+    """Simplified operator matching: a plain string means equality; a dict
+    means $ne / $regex / $gt — the handful of operators real-world NoSQLi
+    payloads actually use."""
+    if isinstance(query_value, dict):
+        if "$ne" in query_value:
+            return stored_value != query_value["$ne"]
+        if "$regex" in query_value:
+            try:
+                return re.search(query_value["$regex"], stored_value) is not None
+            except re.error:
+                return False
+        if "$gt" in query_value:
+            return stored_value > query_value["$gt"]
+        return False
+    return stored_value == query_value
+
 
 def _page(title, body):
     return (
@@ -135,6 +182,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._go(qs)
             elif path == "/echo":
                 self._echo(qs)
+            elif path == "/api/account":
+                self._api_account()
+            elif path == "/login":
+                self._login(parts.query)
             elif re.match(r"^/user/\d+/profile$", path):
                 self._profile(path, qs)
             elif re.match(r"^/order/[0-9a-f-]{36}$", path, re.I):
@@ -169,6 +220,12 @@ class Handler(BaseHTTPRequestHandler):
               &mdash; IDOR, UUID-keyed (3 real order UUIDs exist — see testlab/README.md
               for how to seed them into recon data so hakuza active can cross-reference
               them instead of guessing)</li>
+          <li><a href="/api/account">/api/account</a>
+              &mdash; CORS misconfiguration (reflects Origin + allows credentials — try
+              curl -H "Origin: https://evil.example" to see it reflected back)</li>
+          <li><a href="/login?username=admin&password=wrongpass">/login?username=&amp;password=</a>
+              &mdash; NoSQL injection (try /login?username[$ne]=x&amp;password[$ne]=x
+              to log in as admin without the real password)</li>
         </ul>
         """
         self._send(200, _page("HAKUZA Practice Range", body))
@@ -291,6 +348,44 @@ class Handler(BaseHTTPRequestHandler):
         msg = qs.get("msg", [""])[0]
         self._send(200, _page("Echo", f"<p>You said: {html.escape(msg)}</p>"),
                    extra_headers={"X-Echo": msg})
+
+    # -- /api/account -----------------------------------------------------
+    # Real CORS misconfiguration: the request's own Origin header is
+    # reflected verbatim into Access-Control-Allow-Origin (instead of
+    # checked against an allow-list), combined with
+    # Access-Control-Allow-Credentials: true — the genuinely dangerous
+    # pairing, since it means any origin can make a credentialed
+    # cross-origin request and read session-scoped data back.
+    def _api_account(self):
+        origin = self.headers.get("Origin", "")
+        body = '{"account_id": 4471, "balance_usd": 18320.55, "plan": "enterprise"}'
+        headers = {"Access-Control-Allow-Credentials": "true"}
+        if origin:
+            headers["Access-Control-Allow-Origin"] = origin
+        self._send(200, body, content_type="application/json", extra_headers=headers)
+
+    # -- /login?username=&password= ----------------------------------------
+    # Real NoSQL injection: the raw query string is parsed with bracket
+    # notation (see _parse_nested_qs above), so `username[$ne]=x` becomes a
+    # dict instead of a string, and that dict is handed straight to
+    # _mongo_style_match with no type check at all — the entire bug.
+    # Normal use: /login?username=admin&password=wrongpass -> rejected.
+    # Bypass:     /login?username[$ne]=x&password[$ne]=x -> logged in as
+    #             admin, without ever knowing the real password.
+    def _login(self, raw_query):
+        parsed = _parse_nested_qs(raw_query)
+        username_q = parsed.get("username", "")
+        password_q = parsed.get("password", "")
+        for user in _LOGIN_USERS:
+            if (_mongo_style_match(user["username"], username_q)
+                    and _mongo_style_match(user["password"], password_q)):
+                self._send(200, _page(
+                    "Login",
+                    f"<h1>Welcome, {html.escape(user['username'])}!</h1>"
+                    f"<p>Login successful.</p>",
+                ))
+                return
+        self._send(200, _page("Login", "<p>Invalid credentials.</p>"))
 
     # -- /user/<id>/profile ------------------------------------------------
     # Real IDOR: no session/auth of any kind — whichever numeric ID is in

@@ -63,6 +63,8 @@ second opinion).
 | `/echo?msg=` | `msg` | Value is placed into a custom response header with no CR/LF stripping — `http.server`'s `send_header()` does not validate embedded control characters | CRLF / HTTP Header Injection |
 | `/user/<id>/profile` | path segment | No auth/session check of any kind — whichever numeric ID is in the path gets returned | IDOR heuristic (numeric offset path) |
 | `/order/<uuid>` | path segment | Same bug, UUID-keyed instead of sequential | IDOR heuristic (real-sibling cross-reference path — see "Test it" above for the recon-data seeding step it needs) |
+| `/api/account` | `Origin` header | The request's own `Origin` is reflected verbatim into `Access-Control-Allow-Origin`, paired with `Access-Control-Allow-Credentials: true` | CORS Misconfiguration |
+| `/login?username=&password=` | `username`, `password` | Query string parsed with bracket notation (`username[$ne]=x` becomes a dict, not a string) and handed unsanitized to a naive "MongoDB-style" matcher | NoSQL Injection — both the per-parameter check (fires on `password` alone, since the baseline `username=admin` already matches for real) and the all-parameters check (the classic bypass: `/login?username[$ne]=x&password[$ne]=x` logs in as admin with no real credentials) |
 
 ## Fixed: the IDOR heuristic now catches same-template IDORs
 
@@ -135,11 +137,37 @@ the error phrasing to pick UNION-extraction syntax, and generic-sounding
 error text will make it (correctly, by its own logic) guess the wrong
 vendor for a backend that isn't actually MySQL.
 
+## CORS and NoSQL injection, and a real false-positive class they surfaced
+
+`/api/account` and `/login` were added to close two total gaps hakuza active
+had no coverage for at all: CORS misconfiguration (per-target — `curl -H
+"Origin: https://evil.example" http://127.0.0.1:9911/api/account` shows the
+origin reflected straight back with credentials allowed) and NoSQL
+injection (`/login?username[$ne]=x&password[$ne]=x` logs in as admin with
+no real password — a real bracket-notation-to-object parsing bug, not a
+simulation, implemented without a MongoDB dependency by reproducing the
+exact parsing behavior that makes the bug possible).
+
+Building the NoSQLi checks against this range surfaced a real false-positive
+class: both checks work by renaming a parameter's key to bracket notation
+(`cat` becomes `cat[$ne]`). Against `/product`, `/doc`, and `/go` — none of
+which do bracket-notation parsing — that rename has an *unrelated* side
+effect: the original key vanishes entirely, so `cat` reads back empty,
+`file` reads back empty, etc. Losing a parameter can independently change a
+page's output for reasons that have nothing to do with NoSQL operators, and
+all three endpoints initially false-positived here purely from that. Fixed
+by adding a control request — the parameter simply *removed*, not
+bracket-renamed — before ever persisting a finding: if dropping the
+parameter alone produces the same apparent effect as the operator payload,
+the operator proved nothing, and the finding is correctly suppressed.
+Re-verified across all 8 endpoints after the fix: 10/10 real vuln classes
+confirm, zero false positives.
+
 ## Extending this range
 
 Each endpoint is a small, independent method on `Handler` in
 `vulnerable_site.py` — add a new one following the same pattern (unsanitized
 param → the bug → return HTML) to test additional detection classes as
-`hakuza active` grows new probes (NoSQLi, XXE, and deserialization are not
-covered yet — none of them have a detector in `mod_active.py` as of this
-writing, so there's nothing to validate against them here either).
+`hakuza active` grows new probes (XXE and deserialization are not covered
+yet — neither has a detector in `mod_active.py` as of this writing, so
+there's nothing to validate against them here either).

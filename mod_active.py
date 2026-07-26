@@ -1093,6 +1093,77 @@ def _test_param(ctx, parts, pairs, pname, baseline):
                         "embedded control characters."),
         )
 
+    if budget.exhausted():
+        return
+
+    # --- 9. NoSQL injection — MongoDB-style operator via bracket notation ---
+    # Frameworks that parse query strings into nested objects (Express +
+    # qs/body-parser's "extended" mode, several PHP setups) turn
+    # `?user[$ne]=x` into `{user: {$ne: "x"}}`. If that lands directly in a
+    # query (`db.users.findOne(req.query)`, a real and common pattern),
+    # $ne/$regex/$gt operators can bypass an equality check entirely — the
+    # classic NoSQLi login-bypass shape, but it can happen on any parameter
+    # that reaches a Mongo-style query, not just login forms, so every
+    # parameter gets tried here the same way SQLi does above.
+    for op, val in (("$ne", "hakuza_nosqli_probe"), ("$regex", ".*")):
+        if budget.exhausted():
+            return
+        new_pairs = [(k, v) for k, v in pairs if k != pname] + [(f"{pname}[{op}]", val)]
+        url_n = _build_url(parts, new_pairs)
+        resp_n = _polite_get(budget, delay, url_n, timeout)
+        if resp_n is None:
+            continue
+        body_n = resp_n.text or ""
+        status_changed = resp_n.status_code != baseline["status"]
+        len_changed = abs(len(body_n) - baseline["length"]) > max(60, baseline["length"] * 0.08)
+        if _DENIAL_PHRASE_RE.search(body_n) or not _nosqli_signal(
+                baseline["body"], body_n, status_changed, len_changed):
+            continue  # rejected outright, or no meaningful behavior change — not a signal
+
+        control_url = _build_url(parts, [(k, v) for k, v in pairs if k != pname])
+        if not _nosqli_control_confirms(ctx, control_url, baseline):
+            continue  # simply dropping this parameter looks the same — the operator proved nothing
+
+        ai_result = None
+        if ctx.ai_enabled:
+            ai_result = _ai_escalate(ctx, "NoSQL Injection (operator)", pname, url_n,
+                                     f"{pname}[{op}]={val}", baseline["body"], body_n)
+        reasoning = ai_result.get("reasoning") if ai_result else None
+        confirmed = ai_result is not None and ai_result.get("verdict") == "CONFIRMED"
+        likely = ai_result is not None and ai_result.get("verdict") == "LIKELY"
+        if ai_result is not None and not (confirmed or likely):
+            continue  # AI reviewed it and called it noise — trust that over our own diff
+
+        title_suffix = "" if confirmed else " (needs manual confirmation)"
+        _persist(
+            ctx,
+            title=f"Potential NoSQL Injection via '{pname}' parameter{title_suffix}",
+            severity="high" if confirmed else "medium",
+            category="NoSQL Injection",
+            url=url_n, param=pname, payload=f"{pname}[{op}]={val}",
+            description=(
+                f"Replacing '{pname}={orig_value}' with the bracket-notation operator "
+                f"'{pname}[{op}]={val}' produced a meaningfully different response "
+                f"(status {baseline['status']}→{resp_n.status_code}, length "
+                f"{baseline['length']}→{len(body_n)}) rather than being rejected or "
+                f"ignored — consistent with the operator reaching a MongoDB-style query "
+                f"unsanitized. This targets frameworks that parse query strings into "
+                f"nested objects (Express/qs, several PHP setups); confirm the backend "
+                f"actually uses a document database before treating this as confirmed."
+            ),
+            baseline_snippet=_ctx_snippet(baseline["body"], ""),
+            mutated_snippet=_ctx_snippet(body_n, ""),
+            impact=("NoSQL operator injection commonly bypasses authentication/authorization "
+                   "checks (the classic $ne login-bypass) or widens a query far beyond its "
+                   "intended scope, potentially returning other users' data."),
+            remediation=("Never pass parsed query-string/body objects directly into a "
+                        "database query. Validate that expected fields are the expected "
+                        "primitive type (reject objects/arrays where a string is expected) "
+                        "before using them in any query."),
+            ai_reasoning=reasoning,
+        )
+        return  # one NoSQLi lead per parameter is enough signal
+
 
 # ---------------------------------------------------------------------------
 # IDOR heuristic (runs once per target, on the PATH not the query string)
@@ -1126,12 +1197,72 @@ _IDOR_NOISE_LABEL_RE = re.compile(
 # independent of any surrounding label — belt-and-suspenders for the
 # context check above (e.g. a token embedded with no descriptive label).
 _IDOR_RANDOM_TOKEN_RE = re.compile(r"^(?:[0-9a-f]{12,}|[A-Za-z0-9_-]{20,})$")
-_IDOR_DENIAL_RE = re.compile(
+_DENIAL_PHRASE_RE = re.compile(
     r"access denied|not authorized|unauthoriz|forbidden|please log ?in|"
     r"permission denied|401 unauthorized|403 forbidden|sign in to continue|"
     r"you (?:must|need to) (?:log|sign) in",
     re.I,
+)  # shared by the IDOR heuristic and NoSQL injection testing below — both need
+   # to rule out "the request was simply rejected" before treating a response
+   # diff as a real signal
+
+# NoSQLi login-bypass responses often swap a SHORT "denied" message for a
+# SHORT "success" message — a small raw length delta despite being a
+# completely different, security-critical outcome (confirmed directly
+# against testlab's own /login: 21 bytes of difference, well under any
+# reasonable generic length-diff threshold). Rather than tune the generic
+# threshold down (and risk noise on every other check that shares it), this
+# gives NoSQL injection testing its own, more targeted signal: did a
+# recognizably failure-shaped response become non-failure-shaped.
+_FAILURE_INDICATOR_RE = re.compile(
+    r"invalid|incorrect|failed|unsuccessful|denied|no match|"
+    r"wrong (?:username|password|credentials)",
+    re.I,
 )
+
+
+def _nosqli_signal(baseline_body, mutated_body, status_changed, len_changed):
+    """True if either a semantic failure->non-failure flip is observed, or
+    the existing generic status/length diff fires — the semantic check is
+    the primary signal for this vuln class; the generic diff is a fallback
+    for endpoints (e.g. a search/filter) that don't use recognizable
+    pass/fail wording at all."""
+    baseline_failed = bool(_FAILURE_INDICATOR_RE.search(baseline_body))
+    mutated_failed = bool(_FAILURE_INDICATOR_RE.search(mutated_body))
+    semantic_signal = baseline_failed and not mutated_failed
+    return semantic_signal or status_changed or len_changed
+
+
+def _nosqli_control_confirms(ctx, control_url, baseline):
+    """Both NoSQLi checks rename a parameter's key to bracket notation
+    (pname[$op]) — for a target that does NOT do bracket-notation query
+    parsing (the vast majority; only Express's `qs`, some PHP setups, and
+    similar do), that rename has an unrelated but very real side effect:
+    the ORIGINAL key vanishes entirely, and simply dropping any parameter
+    can independently change behavior for reasons that have nothing to do
+    with NoSQL operators (confirmed directly against this project's own
+    testlab: /product, /doc, and /go all initially false-positived here,
+    purely because losing their one real parameter changed their output —
+    not because any operator was interpreted).
+
+    This sends a CONTROL request with the parameter(s) simply removed
+    (not bracket-renamed, just absent) and returns True only if that
+    control does NOT show the same apparent signal the operator payload
+    did — i.e., the operator's effect is genuinely distinct from "this
+    parameter went missing," not just an artifact of the rename itself."""
+    budget, delay, timeout = ctx.budget, ctx.delay, ctx.timeout
+    if budget.exhausted():
+        return False  # can't verify — be conservative, treat as unproven
+    resp_c = _polite_get(budget, delay, control_url, timeout)
+    if resp_c is None:
+        return False
+    control_body = resp_c.text or ""
+    control_status_changed = resp_c.status_code != baseline["status"]
+    control_len_changed = abs(len(control_body) - baseline["length"]) > max(
+        60, baseline["length"] * 0.08)
+    control_also_signals = _nosqli_signal(baseline["body"], control_body,
+                                          control_status_changed, control_len_changed)
+    return not control_also_signals
 
 
 def _idor_diff_signal(baseline_body, mutated_body):
@@ -1163,7 +1294,7 @@ def _idor_diff_signal(baseline_body, mutated_body):
     if ratio < 0.3:
         return False, ratio, ""  # too different — likely an error/redirect page, not a sibling record
 
-    if _IDOR_DENIAL_RE.search(mutated_body):
+    if _DENIAL_PHRASE_RE.search(mutated_body):
         return False, ratio, ""
 
     real_chunks = []
@@ -1312,6 +1443,193 @@ def _idor_try_variant(ctx, baseline, orig_id_str, variant, new_url, source_note)
         ai_reasoning=reasoning,
     )
     return True
+
+
+# ---------------------------------------------------------------------------
+# NoSQL injection — ALL parameters simultaneously (runs once per target)
+# ---------------------------------------------------------------------------
+#
+# The per-parameter NoSQLi step inside _test_param (step 9) mutates one
+# parameter at a time, keeping everything else at its original value — the
+# right model for XSS/SQLi/SSTI/etc., where breaking one field is enough to
+# observe a difference. It is the WRONG model for the classic NoSQLi
+# login-bypass shape: a check like `username == X AND password == Y` stays
+# fully enforced by whichever field is still a plain string, so injecting
+# the operator into only one of two AND-ed fields produces no observable
+# difference at all — confirmed directly against this project's own
+# testlab/vulnerable_site.py /login endpoint, which requires both fields to
+# carry an operator simultaneously before the bypass has any effect. Real
+# NoSQLi testing always injects into every relevant field at once for
+# exactly this reason, so this second pass does the same: swap every
+# parameter's key to bracket-operator notation together and diff once.
+# ---------------------------------------------------------------------------
+
+def _test_nosqli_all_params(ctx, parts, pairs, baseline):
+    budget, delay, timeout = ctx.budget, ctx.delay, ctx.timeout
+    param_names = [k for k, _ in pairs]
+    if len(param_names) < 2 or budget.exhausted():
+        return  # single-param case is already covered by the per-param step
+
+    for op, val in (("$ne", "hakuza_nosqli_probe"), ("$regex", ".*")):
+        if budget.exhausted():
+            return
+        new_pairs = [(f"{k}[{op}]", val) for k in param_names]
+        url_n = _build_url(parts, new_pairs)
+        resp_n = _polite_get(budget, delay, url_n, timeout)
+        if resp_n is None:
+            continue
+        body_n = resp_n.text or ""
+        status_changed = resp_n.status_code != baseline["status"]
+        len_changed = abs(len(body_n) - baseline["length"]) > max(60, baseline["length"] * 0.08)
+        if _DENIAL_PHRASE_RE.search(body_n) or not _nosqli_signal(
+                baseline["body"], body_n, status_changed, len_changed):
+            continue
+
+        control_url = _build_url(parts, [])  # all parameters simply absent, not bracket-renamed
+        if not _nosqli_control_confirms(ctx, control_url, baseline):
+            continue  # dropping every parameter looks the same — the operators proved nothing
+
+        ai_result = None
+        if ctx.ai_enabled:
+            ai_result = _ai_escalate(ctx, "NoSQL Injection (all-parameter operator)",
+                                     "all parameters", url_n,
+                                     f"every param -> [{op}]={val}", baseline["body"], body_n)
+        reasoning = ai_result.get("reasoning") if ai_result else None
+        confirmed = ai_result is not None and ai_result.get("verdict") == "CONFIRMED"
+        likely = ai_result is not None and ai_result.get("verdict") == "LIKELY"
+        if ai_result is not None and not (confirmed or likely):
+            continue
+
+        title_suffix = "" if confirmed else " (needs manual confirmation)"
+        _persist(
+            ctx,
+            title=f"Potential NoSQL Injection — all parameters (auth bypass shape){title_suffix}",
+            severity="critical" if confirmed else "high",
+            category="NoSQL Injection",
+            url=url_n, param="all parameters", payload=f"every param -> [{op}]={val}",
+            description=(
+                f"Replacing EVERY query parameter's key with bracket-notation operator "
+                f"notation ({op}) simultaneously — the classic NoSQLi auth-bypass pattern, "
+                f"since an AND-conjunction check (e.g. username == X AND password == Y) "
+                f"stays fully enforced unless every ANDed field is neutralized at once — "
+                f"produced a meaningfully different response (status "
+                f"{baseline['status']}→{resp_n.status_code}, length "
+                f"{baseline['length']}→{len(body_n)}). Confirm the backend actually uses a "
+                f"document database before treating this as confirmed."
+            ),
+            baseline_snippet=_ctx_snippet(baseline["body"], ""),
+            mutated_snippet=_ctx_snippet(body_n, ""),
+            impact=("If this endpoint is an authentication check, this is a full "
+                   "authentication bypass — no valid credentials needed."),
+            remediation=("Never pass parsed query-string/body objects directly into a "
+                        "database query. Validate that expected fields are the expected "
+                        "primitive type before using them in any query."),
+            ai_reasoning=reasoning,
+        )
+        return
+
+
+# ---------------------------------------------------------------------------
+# CORS misconfiguration (runs once per target — a response-header property,
+# not a per-parameter injection point)
+# ---------------------------------------------------------------------------
+
+def _test_cors(ctx, target_url):
+    """Two real cross-origin requests: an attacker-controlled Origin, and
+    the `null` origin (sent by sandboxed iframes, some sandboxed redirects,
+    and file:// pages) — checking whether the server reflects either back
+    in Access-Control-Allow-Origin. Reflecting an arbitrary origin is bad on
+    its own; reflecting it AND setting Access-Control-Allow-Credentials:
+    true is the genuinely dangerous combination — it means any malicious
+    page can read this API's responses (including session-scoped data) from
+    a logged-in victim's browser."""
+    budget, delay, timeout = ctx.budget, ctx.delay, ctx.timeout
+
+    def _probe(origin_value):
+        if budget.exhausted():
+            return None
+        time.sleep(delay)
+        budget.spend()
+        try:
+            return requests.get(target_url, timeout=timeout, allow_redirects=True,
+                                headers={**_UA_HEADERS, "Origin": origin_value})
+        except Exception:
+            return None
+
+    canary_origin = "https://hakuza-cors-canary.invalid"
+    resp = _probe(canary_origin)
+    if resp is not None:
+        acao = resp.headers.get("Access-Control-Allow-Origin", "")
+        acac = resp.headers.get("Access-Control-Allow-Credentials", "").lower() == "true"
+        if acao == canary_origin:
+            severity = "critical" if acac else "high"
+            _persist(
+                ctx,
+                title="CORS misconfiguration — arbitrary Origin reflected"
+                     + (" with credentials allowed" if acac else ""),
+                severity=severity,
+                category="CORS Misconfiguration",
+                url=target_url, param="Origin header", payload=canary_origin,
+                description=(
+                    f"Sending an arbitrary, attacker-controlled Origin header "
+                    f"({canary_origin}) caused the server to reflect it back verbatim in "
+                    f"Access-Control-Allow-Origin"
+                    + (
+                        ", AND Access-Control-Allow-Credentials: true was also present — "
+                        "meaning any malicious page can make credentialed cross-origin "
+                        "requests to this endpoint and read the response, as any logged-in "
+                        "victim who visits it."
+                        if acac else
+                        " (Access-Control-Allow-Credentials was not set, which limits — but "
+                        "does not eliminate — real-world impact: non-credentialed sensitive "
+                        "data is still exposed to any origin)."
+                    )
+                ),
+                baseline_snippet="N/A (header-only check, no body comparison)",
+                mutated_snippet=(f"Access-Control-Allow-Origin: {acao}\n"
+                                 f"Access-Control-Allow-Credentials: {acac}"),
+                impact=("Any website a victim visits can make authenticated requests to this "
+                       "endpoint on the victim's behalf and read the response — full "
+                       "cross-origin data theft if the endpoint returns anything "
+                       "session-scoped."
+                       if acac else
+                       "Any website can read this endpoint's response cross-origin. Impact "
+                       "depends on what the endpoint returns without authentication."),
+                remediation=("Never reflect the Origin header verbatim. Validate against an "
+                            "explicit allow-list of trusted origins server-side, and never "
+                            "combine a wildcard/reflected origin with "
+                            "Access-Control-Allow-Credentials: true."),
+            )
+            return  # one CORS finding per target is enough signal
+
+    if budget.exhausted():
+        return
+    resp_null = _probe("null")
+    if resp_null is not None:
+        acao = resp_null.headers.get("Access-Control-Allow-Origin", "")
+        acac = resp_null.headers.get("Access-Control-Allow-Credentials", "").lower() == "true"
+        if acao == "null":
+            _persist(
+                ctx,
+                title="CORS misconfiguration — 'null' Origin accepted",
+                severity="high" if acac else "medium",
+                category="CORS Misconfiguration",
+                url=target_url, param="Origin header", payload="null",
+                description=(
+                    "Sending Origin: null (sent by sandboxed iframes, some sandboxed "
+                    "redirects, and local file:// pages — all attacker-reachable contexts) "
+                    "caused the server to set Access-Control-Allow-Origin: null" +
+                    (", with credentials allowed." if acac else ".")
+                ),
+                baseline_snippet="N/A (header-only check, no body comparison)",
+                mutated_snippet=(f"Access-Control-Allow-Origin: {acao}\n"
+                                 f"Access-Control-Allow-Credentials: {acac}"),
+                impact=("An attacker can reach the 'null' origin trivially (a sandboxed "
+                       "iframe with no allow-same-origin, for example) and make cross-origin "
+                       "requests that the browser treats as permitted."),
+                remediation=("Never special-case or accept the literal string 'null' as a "
+                            "trusted Origin value."),
+            )
 
 
 def _test_idor_heuristic(ctx, parts, baseline):
@@ -1516,19 +1834,18 @@ def _resolve_targets(args, console, eng):
         ))
         return [], True
 
+    # Every candidate URL is kept, even ones with no query string — the
+    # per-parameter mutation loop (SQLi/XSS/SSTI/etc.) needs real params to
+    # mutate and simply won't run for those, but the per-TARGET checks
+    # (IDOR path-ID heuristic, CORS misconfiguration) don't need any and
+    # would otherwise never get exercised in --all mode at all.
     with_params = [u for u in raw_urls if "?" in u]
-    skipped = len(raw_urls) - len(with_params)
     console.print(
         f"[dim]{len(raw_urls)} candidate URL(s) from recon data; {len(with_params)} have query "
-        f"parameters and are testable; skipping {skipped} with no parameters — this v1 engine "
-        f"only mutates query-string parameters.[/dim]"
+        f"parameters (full mutation-based testing), {len(raw_urls) - len(with_params)} without "
+        f"(still tested for IDOR/CORS, which don't need query params).[/dim]"
     )
-    if not with_params:
-        console.print("[yellow]No candidate URLs have query parameters — nothing for this engine "
-                      "to test.[/yellow]")
-        return [], True
-
-    return with_params, False
+    return raw_urls, False
 
 
 def _apply_scope_guard(candidates, console, eng):
@@ -1680,6 +1997,12 @@ def cmd_active(args, console) -> None:
 
         if not budget.exhausted():
             _test_idor_heuristic(ctx, parts, baseline)
+
+        if not budget.exhausted():
+            _test_nosqli_all_params(ctx, parts, pairs, baseline)
+
+        if not budget.exhausted():
+            _test_cors(ctx, target_url)
 
     console.print()
     console.print(Panel(
