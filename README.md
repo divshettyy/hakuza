@@ -32,6 +32,7 @@ Without an `ANTHROPIC_API_KEY` set, the AI-dependent phases (analyze/chain/repor
 | `hakuza fuzz` | Smart ffuf wrapper — dirs/params/api/vhosts, tech-aware wordlist selection |
 | `hakuza scan` | nuclei scan, parsed and persisted as findings. `--profile vuln` runs a comprehensive vulnerability-class sweep — XSS, SQLi, NoSQLi, RCE, SSRF, SSTI, XXE, LFI, IDOR, CORS, JWT, CSRF, deserialization, open redirect, GraphQL, file upload, CRLF injection (`quick`=fast CVE/exposure triage, `full`=everything, `stealth`=vuln tags at a throttled request rate to avoid WAF/IDS alerting) |
 | `hakuza autopilot` | recon → takeover → wayback → secrets → scan → (AI triage/chain) → report, chained, unattended |
+| `hakuza active` | Live active testing — statistical baseline + parameter mutation + differential response analysis, with optional AI escalation and auto-generated curl/Python PoCs (see below) |
 | `hakuza import` | Import Nessus/Nuclei/Burp/CSV output |
 | `hakuza scope` | Add/check/list scope entries (glob-matched) |
 | `hakuza add` / `findings` / `update` | Manual findings CRUD |
@@ -89,6 +90,26 @@ python3 -m pytest webapp/tests/test_e2e.py -v
 The suite spins up `hakuza serve` on a dedicated port (7391), seeds two throwaway engagements through the real CLI, runs 8 tests (page rendering, click-through navigation, 404 handling, zero console errors, the XSS-execution proof, and report-link serving), and backs up/restores any pre-existing `~/.hakuza` state so it's safe to run against a real installation with real engagement data.
 
 On a root-less environment where `playwright install --with-deps` can't run `apt-get` (no sudo), Chromium's shared-library dependencies (`libnspr4`, `libnss3`, `libatk-1.0`, `libatk-bridge-2.0`, `libXdamage`, `libasound2`, `libatspi2.0`, `libxres1`) may need to be extracted manually via `dpkg -x <deb> <destdir>` from downloaded `.deb` packages and referenced via `LD_LIBRARY_PATH` before Chromium will launch. A real CI runner with root can just use `playwright install --with-deps chromium` instead.
+
+## Live active testing (`hakuza active`)
+
+Every other scanning path in HAKUZA — `hakuza scan` (nuclei) — is STATIC template matching: a known request/response signature compared against a fixed library of known-bad patterns. `hakuza active` (`mod_active.py`) is the opposite approach: a real ACTIVE, adaptive differential-testing engine that sends live HTTP requests and reasons about *this specific target's* actual behavior instead of pattern-matching against a static template library.
+
+```bash
+hakuza active "https://target.tld/listproducts.php?cat=1"        # single URL
+hakuza active --all --depth deep                                  # every query-param URL from `hakuza wayback` recon data
+hakuza active "https://target.tld/page.php?id=1" --no-ai --max-requests 50
+```
+
+How it works: for each candidate URL it (1) sends the SAME real GET request 3 times to build a statistical baseline — status code, body length, sha256 hash, and response timing (mean + population stdev) — then (2) mutates one query parameter at a time with a small set of non-destructive probes and diffs the live mutated response against that real baseline (status/length/hash/`difflib` similarity ratio/timing), then (3) for ambiguous signals, optionally escalates to Claude for a human-pentester-style judgment call, and (4) for every CONFIRMED result, auto-generates a standalone, reproducible **curl command + Python PoC script** so the finding can be independently re-run — not just trusted on a scanner's say-so.
+
+Vuln classes covered: reflected XSS (unescaped-reflection + working-payload confirmation, vs. encoded-but-inert reflection reported only as informational), SQL injection (error-based via vendor error signatures, boolean-based blind via three-way response-similarity comparison, and — `--depth deep` only — time-based blind with a *statistical* timing gate: `baseline_mean + max(3×stdev, 2.5s)`, not a fixed ">4 seconds" rule, to avoid false positives on naturally slow targets), OS command injection (time-based, `--depth deep` only, on shell-shaped parameter names), SSTI (`{{7*7}}`, Jinja2/Twig family), path traversal / LFI (`/etc/passwd` signature match, on file/path-shaped parameter names), open redirect (canary Location-header check, on redirect-shaped parameter names), CRLF/header injection (real parsed-header check), and a deliberately-conservative IDOR **heuristic** (path-ID substitution + response-similarity band — always labeled as a lead requiring manual two-session confirmation, never an over-claimed finding).
+
+`--script PATH` runs your own pre-existing Python test script (no AI involved) and offers to persist any `HAKUZA_FINDING: {json}` line from its stdout as a real finding — the plug-in point for custom tests written for a specific engagement or live in an interview. `--ai-script "description"` has Claude draft a standalone test script for you; the **full script is always printed for review and is never executed without an explicit confirmation prompt** — no exceptions, since it would otherwise run arbitrary AI-authored code with the operator's own permissions.
+
+Safety guardrails, actually enforced (not just documented): v1 is **GET-only** — the `--allow-state-changing` flag is accepted but is currently a documented no-op, reserved for a future version; every run is bounded by a running **request budget** (`--max-requests`, default 300) that stops the whole run with a clear summary rather than running away; every live request is rate-limited (`--delay`, default 0.15s); time-based payloads sleep a bounded 4 seconds, never something that piles up slow queries on a live target; no payload is ever destructive (no `DROP TABLE`, no `rm -rf`, no real file writes); and every target is checked against `hakuza scope` before it's touched, best-effort (an engagement with no scope defined is never blocked, matching `hakuza autopilot`'s existing behavior).
+
+Requires `requests` (hard dependency, no graceful degradation — see Setup) and, optionally, `mod_active_ai.py` for AI escalation and PoC generation; without it the core diffing engine still runs fully and just skips those two pieces with a one-line notice.
 
 ## Architecture
 

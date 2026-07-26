@@ -41,6 +41,11 @@ try:
 except ImportError:
     mod_recon_plus = None
 
+try:
+    import mod_active
+except ImportError:
+    mod_active = None
+
 # ---------------------------------------------------------------------------
 # CONSTANTS
 # ---------------------------------------------------------------------------
@@ -4522,6 +4527,10 @@ def build_parser() -> argparse.ArgumentParser:
     if mod_recon_plus is not None:
         mod_recon_plus.register_argparse(sub)
 
+    # --- active module: live differential response testing ---
+    if mod_active is not None:
+        mod_active.register_argparse(sub)
+
     return parser
 
 
@@ -4650,6 +4659,9 @@ def main():
         })
     else:
         dispatch["config"] = cmd_config
+
+    if mod_active is not None:
+        dispatch["active"] = mod_active.cmd_active
 
     handler = dispatch.get(args.command)
     if handler:

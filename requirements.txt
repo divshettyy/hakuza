@@ -1,5 +1,5 @@
 anthropic>=0.105.0
 rich>=13.9.0
 markdown2>=2.5.0
-requests>=2.31.0  # optional — mod_recon_plus.py degrades gracefully without it, but recommended
+requests>=2.31.0  # optional for mod_recon_plus.py (degrades to curl subprocess calls without it); HARD-required by `hakuza active` (mod_active.py) — it sends live HTTP requests and has no fallback, so install this
 flask>=3.0.0      # powers `hakuza serve` — the browser-based web dashboard (webapp/)
