@@ -79,6 +79,8 @@ second opinion).
 | `/domxss-safe` (fragment and `?name=`) | — (intentionally not vulnerable) | Structurally identical to `/domxss` — same two sinks, same page shape — except both use `.textContent` instead of `.innerHTML`, inert by construction | Nothing should fire here — a negative control specifically so the DOM-XSS check's real-execution proof (not surface pattern-matching) gets exercised against a true negative, not just a true positive |
 | `/fetch?url=` | `url` | Hands the parameter straight to `urllib.request.urlopen()` with zero scheme or host validation — a real, unmocked network fetch (`file://` reads real local files; an arbitrary `http://` host gets a real outbound request) | Server-Side Request Forgery — `file:///etc/passwd` for local file read, `http://169.254.169.254/latest/meta-data/` for the cloud-metadata-credential-theft variant (the two metadata hosts are canned in this handler since they aren't routable in this sandbox; point `/fetch` at its own address for a fully unmocked end-to-end demo) |
 | `/fetch-safe?url=` | — (intentionally not vulnerable) | Same feature, same page shape, except the URL is checked against an http(s)-only scheme allow-list and a host denylist (metadata addresses, loopback, link-local) before ever reaching `urlopen` | Nothing should fire here — negative control for the SSRF check |
+| `/xmlpreview?data=` | `data` | Parses the parameter with lxml's `XMLParser(resolve_entities=True)` — a real, unmocked external-entity resolution (needs `pip install lxml`; see "XXE, and the one dependency this range needed" below) | XXE — a DOCTYPE declaring an entity pointing at `file:///etc/passwd` gets resolved and the real content comes back in the response |
+| `/xmlpreview-safe?data=` | — (intentionally not vulnerable) | Same feature, same page shape, except `resolve_entities=False` (lxml's own default) + `load_dtd=False` | Nothing should fire here — negative control for the XXE check |
 
 ## Fixed: the IDOR heuristic now catches same-template IDORs
 
@@ -396,11 +398,68 @@ against `/api/profile` and `/api/kid-profile`, plus the negative controls
 is designed to produce still fire, zero new false positives, and every
 rewired PoC script independently reproduces its finding when run standalone.
 
+## SSRF, and the "make no mistakes" call on Oracle
+
+Two more checks added in a later pass, after the adversarial-audit hardening
+above. **SSRF** (`/fetch?url=`) was a genuine, previously-unflagged gap —
+even the capability audit had missed it; `hakuza active` had zero real SSRF
+coverage, only a static nuclei tag. Built two zero-ambiguity signals rather
+than a differential/timing-based blind-SSRF lead (deliberately left out —
+genuinely uncertain without an out-of-band callback this tool doesn't have):
+`file://` scheme for local file read, and a cloud-metadata-shaped fetch for
+real AWS/GCP instance-metadata content leakage. The two metadata hosts
+(`169.254.169.254`, `metadata.google.internal`) aren't routable in this
+sandbox, so `/fetch`'s handler special-cases them to return realistic canned
+IMDS-shaped content directly — the same honest tradeoff already used for
+`/api/v1/pods` above (mocking only the unreproducible environmental
+prerequisite, while the vulnerability and detector code are both 100% real).
+Point `/fetch` at its own address (`http://127.0.0.1:<port>/`) for a fully
+unmocked demonstration with zero mocking involved at all.
+
+**XXE** (`/xmlpreview?data=`) came with a real architectural question: fits
+the engine's existing GET-only per-parameter loop cleanly (gated on the
+parameter's *own baseline value* already looking like XML, no new POST
+capability needed), but genuinely demonstrating it needs a parser that can
+be misconfigured to resolve external entities — and Python's own stdlib XML
+parsers (`ElementTree`, `minidom`, `sax`, all built on `expat`) structurally
+cannot do this at all, confirmed directly before writing any code (the exact
+payload that leaks real content under lxml's `resolve_entities=True` raises
+`Entity 'x' not defined` under stdlib `ElementTree`, with no parser option
+to change that). This range's whole design philosophy up to this point was
+"zero third-party dependencies, stdlib only" — but that constraint was never
+really about avoiding dependencies for their own sake, it was about not
+reaching for a library to shortcut something otherwise buildable. Here, the
+dependency isn't a shortcut, it's the only way this vulnerability class can
+exist at all — so `lxml` is a genuine, one-time, honestly-documented
+exception (optional import, `HAS_LXML`, same pattern as `HAS_PLAYWRIGHT`
+elsewhere in this project — every other endpoint keeps working with zero
+dependencies if it isn't installed).
+
+Also considered and explicitly ruled out in the same pass: **Oracle SQLi
+UNION-extraction syntax**, the last vendor the capability audit had flagged
+as missing from `mod_active.py`'s `_SQLI_VENDOR_SYNTAX` dict (MySQL,
+PostgreSQL, SQLite, and MSSQL are all implemented; Oracle error-based
+*detection* already works via `_SQLI_ERROR_SIGNATURES`, only extraction was
+missing). Investigated properly before deciding, not skipped reflexively:
+Oracle requires a `FROM` clause on *every* `SELECT`, including the injected
+half of a `UNION` — but the shared `_sqli_column_count`/`_sqli_visible_column`
+probe functions build a bare `UNION SELECT {cols}` with no vendor branching
+at all today, so adding Oracle isn't a one-line dict entry, it needs surgery
+to code every other vendor's extraction already depends on. With no Oracle
+instance reachable in this environment (no Docker; Oracle XE is a multi-GB
+licensed install, not a lightweight pip/apt package like every other
+supported vendor), there was no way to verify a change here live — and
+shipping an unverified change to shared SQL-injection extraction code fails
+this session's own "make no mistakes" brief. Left out, matching this file's
+existing MSSQL precedent (`tables_query: None`, honestly "not implemented,"
+rather than a guess presented as working).
+
 ## Extending this range
 
 Each endpoint is a small, independent method on `Handler` in
 `vulnerable_site.py` — add a new one following the same pattern (unsanitized
 param → the bug → return HTML) to test additional detection classes as
-`hakuza active` grows new probes (XXE and deserialization are not covered
-yet — neither has a detector in `mod_active.py` as of this writing, so
-there's nothing to validate against them here either).
+`hakuza active` grows new probes (deserialization is not covered yet — no
+detector for it in `mod_active.py` as of this writing, so there's nothing
+to validate against it here either; XXE was closed in a later pass, see
+above).
