@@ -293,14 +293,14 @@ def add_host(
         conn.commit()
         return get_host_by_id(existing['id'])
 
-    conn.execute(
+    cursor = conn.execute(
         """INSERT INTO graph_hosts
            (engagement_id, hostname, ip, os, discovered_via_tool, discovered_at, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         (engagement_id, hostname, ip, os, discovered_via_tool, now, now, now),
     )
     conn.commit()
-    host_id = conn.lastrowid
+    host_id = cursor.lastrowid
     return get_host_by_id(host_id)
 
 
@@ -353,14 +353,14 @@ def add_service(
         conn.commit()
         return get_service_by_id(existing['id'])
 
-    conn.execute(
+    cursor = conn.execute(
         """INSERT INTO graph_services
            (host_id, port, protocol, service_name, version, discovered_via, discovered_at, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (host_id, port, protocol, service_name, version, discovered_via, now, now, now),
     )
     conn.commit()
-    service_id = conn.lastrowid
+    service_id = cursor.lastrowid
     return get_service_by_id(service_id)
 
 
@@ -400,7 +400,7 @@ def add_vulnerability(
     conn = _get_db()
     now = datetime.now().isoformat()
 
-    conn.execute(
+    cursor = conn.execute(
         """INSERT INTO graph_vulnerabilities
            (host_id, service_id, finding_id, cve_id, cwe_id, severity, technique_id,
             cvss_score, exploitability, discovered_at, created_at, updated_at)
@@ -409,7 +409,7 @@ def add_vulnerability(
          cvss_score, exploitability, now, now, now),
     )
     conn.commit()
-    vuln_id = conn.lastrowid
+    vuln_id = cursor.lastrowid
     return get_vulnerability_by_id(vuln_id)
 
 
@@ -485,7 +485,7 @@ def add_credential(
          confirmed, now, now, now),
     )
     conn.commit()
-    cred_id = conn.lastrowid
+    cred_id = cursor.lastrowid
 
     row = conn.execute("SELECT * FROM graph_credentials WHERE id = ?", (cred_id,)).fetchone()
     return dict(row) if row else None
@@ -582,7 +582,7 @@ def add_attack_path(
          likelihood, required_creds, assumed_creds, now, now, now),
     )
     conn.commit()
-    path_id = conn.lastrowid
+    path_id = cursor.lastrowid
 
     row = conn.execute("SELECT * FROM graph_attack_paths WHERE id = ?", (path_id,)).fetchone()
     return dict(row) if row else None
