@@ -10,6 +10,79 @@ from datetime import datetime
 import anthropic
 
 # Requires: mod_techniques to be loaded
+try:
+    from mod_technique_executors import execute_technique
+    HAS_EXECUTORS = True
+except ImportError:
+    HAS_EXECUTORS = False
+
+try:
+    from mod_techniques import load_techniques
+    HAS_TECHNIQUES = True
+except ImportError:
+    HAS_TECHNIQUES = False
+
+
+# Lazy-load hakuza module helpers
+def _n(attr):
+    """Fetch attribute from hakuza module at call-time."""
+    import importlib
+    hakuza = importlib.import_module("hakuza")
+    return getattr(hakuza, attr)
+
+
+# Global console and other required references
+console = None
+Confirm = None
+SYSTEM_PROMPT = """You are HAKUZA, an autonomous penetration testing orchestrator."""
+
+
+def _init_globals():
+    """Initialize global references from hakuza on first use."""
+    global console, Confirm, SYSTEM_PROMPT
+    if console is None:
+        try:
+            from rich.console import Console
+            from rich.prompt import Confirm as RichConfirm
+            console = Console()
+            Confirm = RichConfirm
+        except ImportError:
+            import sys
+            class SimpleConsole:
+                def print(self, msg):
+                    print(msg)
+            class SimpleConfirm:
+                @staticmethod
+                def ask(msg):
+                    return input(f"{msg} (y/n): ").lower().startswith('y')
+            console = SimpleConsole()
+            Confirm = SimpleConfirm
+    return console
+
+
+# Wrapper functions for hakuza module dependencies
+def get_engagement(name: str = None) -> Optional[Dict[str, Any]]:
+    """Wrapper for hakuza.get_engagement()."""
+    try:
+        return _n("get_engagement")(name)
+    except Exception:
+        return None
+
+
+def list_findings(engagement_id: str, severity_filter: str = None) -> List[Dict]:
+    """Wrapper for hakuza.list_findings()."""
+    try:
+        return _n("list_findings")(engagement_id, severity_filter)
+    except Exception:
+        return []
+
+
+def get_config_value(key: str) -> Optional[str]:
+    """Wrapper for hakuza.get_config_value()."""
+    try:
+        return _n("get_config_value")(key)
+    except Exception:
+        return None
 
 
 def build_orchestration_prompt(engagement: Dict[str, Any], findings: List[Dict[str, Any]],
@@ -73,6 +146,9 @@ def run_orchestration_loop(engagement_name: str, depth: int = 5, max_iterations:
     """
     Run autonomous orchestration loop: read state → plan → execute → repeat
     """
+    global console
+    console = _init_globals()
+
     engagement = get_engagement(engagement_name)
     if not engagement:
         console.print(f"[red]Engagement not found: {engagement_name}[/red]")
@@ -93,7 +169,11 @@ def run_orchestration_loop(engagement_name: str, depth: int = 5, max_iterations:
         console.print(f"  Current findings: {len(findings)}")
 
         # 2. Load available techniques
-        techniques = load_techniques()
+        if HAS_TECHNIQUES:
+            techniques = load_techniques()
+        else:
+            techniques = []
+
         if not techniques:
             console.print("  [red]No techniques loaded. Aborting.[/red]")
             break
@@ -151,11 +231,31 @@ def run_orchestration_loop(engagement_name: str, depth: int = 5, max_iterations:
                 console.print("  [yellow]Action denied by user[/yellow]")
                 continue
 
-        # 8. Execute action (placeholder — would call actual testing functions)
+        # 8. Execute action using technique executors
         console.print("[dim]Executing...[/dim]")
-        # TODO: Call technique-specific testing functions
-        # For now, just simulate success
-        console.print("[green]✓ Test executed[/green]")
+
+        if HAS_EXECUTORS:
+            # Prepare executor parameters
+            test_params = action.get("test_params", [])
+            target_url = action.get("target_url")
+
+            # Execute the technique
+            finding = execute_technique(
+                technique_id=technique_id,
+                target_url=target_url,
+                params_list=test_params,
+                eng_id=engagement["id"]
+            )
+
+            if finding:
+                console.print(f"[green]✓ Vulnerability found: {finding.get('title', 'Unknown')}[/green]")
+            else:
+                console.print("[yellow]✓ Test executed - no vulnerability detected[/yellow]")
+        else:
+            console.print("[yellow]⚠ Executors not available - suggest manual testing[/yellow]")
+            console.print(f"  Target: {action.get('target_url')}")
+            console.print(f"  Technique: {technique_id}")
+            console.print(f"  Parameters: {', '.join(action.get('test_params', []))}")
 
     console.print(f"\n[bold cyan]Orchestration Loop Complete[/bold cyan]")
     console.print(f"Total findings: {len(list_findings(engagement['id']))}")

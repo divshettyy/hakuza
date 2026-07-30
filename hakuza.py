@@ -4368,6 +4368,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_chain.add_argument("--input", default=None)
     p_chain.add_argument("--save", action="store_true")
 
+    # --- attack-surface ---
+    p_surface = sub.add_parser("attack-surface", help="Visualize attack surface topology & prioritized targets")
+    p_surface.add_argument("--format", choices=["ascii", "json"], default="ascii",
+                          help="Output format: ascii table or JSON graph")
+    p_surface.add_argument("--rce-paths", action="store_true",
+                          help="Find RCE attack paths (SQLi/SSTI/XXE/RCE/CmdInj)")
+    p_surface.add_argument("--lateral", action="store_true",
+                          help="Find lateral-movement opportunities (shares, creds, SSH)")
+    p_surface.add_argument("--max-targets", type=int, default=10,
+                          help="Max targets to display (default: 10)")
+    p_surface.add_argument("--save", default=None, metavar="FILE",
+                          help="Save surface to JSON file")
+
     # --- explain ---
     p_explain = sub.add_parser("explain", help="Deep-dive any vuln type, CVE, or technique")
     p_explain.add_argument("topic", nargs="+", help="Topic to explain")
@@ -4551,6 +4564,37 @@ def build_parser() -> argparse.ArgumentParser:
     if mod_active is not None:
         mod_active.register_argparse(sub)
 
+    p_list_tech = sub.add_parser("list-techniques",
+    help="List all ATT&CK-mapped techniques available for orchestration",
+    description="List loaded techniques with optional filtering by tag/severity"
+    )
+    p_list_tech.add_argument("--tag", help="Filter by applicability tag (CSV)")
+    p_list_tech.add_argument("--severity", help="Filter by severity (critical/high/medium/low/info)")
+    p_list_tech.set_defaults(func=cmd_list_techniques)
+    p_show_tech = sub.add_parser("show-technique",
+    help="Display detailed information about a technique",
+    description="Show full details including procedure, prerequisites, and artifacts"
+    )
+    p_show_tech.add_argument("technique_id", help="Technique ID (e.g., sqli_error)")
+    p_show_tech.set_defaults(func=cmd_show_technique)
+
+    p_poc = sub.add_parser("poc-discover",
+    help="Auto-discover public PoC code for a CVE",
+    description="Search GitHub and known registries for working exploits"
+    )
+    p_poc.add_argument("cve_id", help="CVE ID (e.g., CVE-2021-44228)")
+    p_poc.set_defaults(func=cmd_poc_discover)
+
+    p_orch = sub.add_parser("orchestrate",
+    help="Run autonomous orchestration loop (ReAct agent)",
+    description="LLM-driven agent autonomously decides and executes tests based on engagement state"
+    )
+    p_orch.add_argument("--engagement", "-e", help="Engagement name (default: current)")
+    p_orch.add_argument("--depth", "-d", type=int, default=5, help="Search depth (default: 5)")
+    p_orch.add_argument("--max-iterations", "-i", type=int, default=10, help="Max iterations (default: 10)")
+    p_orch.add_argument("--dry-run", action="store_true", help="Plan only, don't execute")
+    p_orch.set_defaults(func=cmd_orchestrate)
+
     return parser
 
 
@@ -4638,6 +4682,7 @@ def main():
         "analyze": cmd_analyze,
         "advise": cmd_advise,
         "chain": cmd_chain,
+        "attack-surface": cmd_attack_surface,
         "explain": cmd_explain,
         "web": cmd_web,
         "api": cmd_api,
@@ -4666,6 +4711,10 @@ def main():
         "matrix":      cmd_matrix,
         "diff-report": cmd_diff_report,
         "serve":       cmd_serve,
+        "list-techniques": cmd_list_techniques,
+        "show-technique": cmd_show_technique,
+        "poc-discover": cmd_poc_discover,
+        "orchestrate": cmd_orchestrate,
     }
 
     if mod_recon_plus is not None:
@@ -4702,6 +4751,9 @@ def main():
         parser.print_help()
 
 
+
+
+# ──────────────────────────────────────────────────────────────────────────
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -4779,7 +4831,7 @@ _BLOODHOUND_QUERIES = [
 # AD PHASE DETAILS (static playbook content injected into the AI prompt)
 # ---------------------------------------------------------------------------
 
-_AD_PHASES_STATIC = r"""
+_AD_PHASES_STATIC = r"""\
 ## Phase 1 — Enumeration
 
 ### Domain Enumeration
@@ -5099,7 +5151,7 @@ def cmd_ad(args, console) -> None:
     Also prints a BloodHound Cypher query reference.
     """
     eng = _require_engagement(console)
-    client = get_client_or_none()
+    client = get_client()
 
     dc_ip    = getattr(args, "dc",     None) or eng.get("target", "<DC_IP>")
     domain   = getattr(args, "domain", None) or "<DOMAIN>"
@@ -5148,33 +5200,29 @@ def cmd_ad(args, console) -> None:
         f"Format every code block with triple backticks and the language tag (bash/powershell)."
     )
 
-    if client is None:
-        console.print("[dim]Set ANTHROPIC_API_KEY for an AI-generated, target-tailored playbook.[/dim]")
-        response = None
-    else:
-        response = stream_to_console(
-            client,
-            [{"role": "user", "content": prompt}],
-            max_tokens=4096,
-            console=console,
-        )
+    response = stream_to_console(
+        client,
+        [{"role": "user", "content": prompt}],
+        max_tokens=4096,
+        console=console,
+    )
 
-        # ------------------------------------------------------------------
-        # Save to file if requested
-        # ------------------------------------------------------------------
-        if do_save and response:
-            ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-            eng_dir = HAKUZA_DIR / "engagements" / eng["name"]
-            reports_dir = eng_dir / "reports"
-            reports_dir.mkdir(parents=True, exist_ok=True)
-            out_path = reports_dir / f"ad_playbook_{ts}.md"
-            header = (
-                f"# AD Pentest Playbook — {eng['name']}\n"
-                f"**Date:** {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}\n"
-                f"**DC:** {dc_ip}  |  **Domain:** {domain}\n\n---\n\n"
-            )
-            out_path.write_text(header + response)
-            console.print(f"\n[green]Playbook saved:[/green] {out_path}")
+    # ------------------------------------------------------------------
+    # Save to file if requested
+    # ------------------------------------------------------------------
+    if do_save and response:
+        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        eng_dir = HAKUZA_DIR / "engagements" / eng["name"]
+        reports_dir = eng_dir / "reports"
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        out_path = reports_dir / f"ad_playbook_{ts}.md"
+        header = (
+            f"# AD Pentest Playbook — {eng['name']}\n"
+            f"**Date:** {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}\n"
+            f"**DC:** {dc_ip}  |  **Domain:** {domain}\n\n---\n\n"
+        )
+        out_path.write_text(header + response)
+        console.print(f"\n[green]Playbook saved:[/green] {out_path}")
 
     # ------------------------------------------------------------------
     # BloodHound Cypher reference
@@ -5299,7 +5347,7 @@ def cmd_ad(args, console) -> None:
 # NETWORK PHASE DETAILS (injected into AI prompt as reference)
 # ---------------------------------------------------------------------------
 
-_NETWORK_PHASES_STATIC = r"""
+_NETWORK_PHASES_STATIC = r"""\
 ## Phase 1 — Host Discovery
 
 ```bash
@@ -5578,7 +5626,7 @@ def cmd_network(args, console) -> None:
     service enumeration, protocol attacks, MITM, and pivoting.
     """
     eng = _require_engagement(console)
-    client = get_client_or_none()
+    client = get_client()
 
     cidr_range = getattr(args, "range",   None) or eng.get("target", "<RANGE>")
     profile    = getattr(args, "profile", "quick") or "quick"
@@ -5671,32 +5719,29 @@ def cmd_network(args, console) -> None:
         f"to hit first given a BFSI network, with one-line rationale each."
     )
 
-    if client is None:
-        console.print("[dim]Set ANTHROPIC_API_KEY for an AI-generated, target-tailored playbook.[/dim]")
-    else:
-        response = stream_to_console(
-            client,
-            [{"role": "user", "content": prompt}],
-            max_tokens=4096,
-            console=console,
-        )
+    response = stream_to_console(
+        client,
+        [{"role": "user", "content": prompt}],
+        max_tokens=4096,
+        console=console,
+    )
 
-        # ------------------------------------------------------------------
-        # Save to file
-        # ------------------------------------------------------------------
-        if do_save and response:
-            ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-            eng_dir = HAKUZA_DIR / "engagements" / eng["name"]
-            reports_dir = eng_dir / "reports"
-            reports_dir.mkdir(parents=True, exist_ok=True)
-            out_path = reports_dir / f"network_playbook_{ts}.md"
-            header = (
-                f"# Network Pentest Playbook — {eng['name']}\n"
-                f"**Date:** {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}\n"
-                f"**Range:** {cidr_range}  |  **Profile:** {profile}\n\n---\n\n"
-            )
-            out_path.write_text(header + response)
-            console.print(f"\n[green]Playbook saved:[/green] {out_path}")
+    # ------------------------------------------------------------------
+    # Save to file
+    # ------------------------------------------------------------------
+    if do_save and response:
+        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        eng_dir = HAKUZA_DIR / "engagements" / eng["name"]
+        reports_dir = eng_dir / "reports"
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        out_path = reports_dir / f"network_playbook_{ts}.md"
+        header = (
+            f"# Network Pentest Playbook — {eng['name']}\n"
+            f"**Date:** {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}\n"
+            f"**Range:** {cidr_range}  |  **Profile:** {profile}\n\n---\n\n"
+        )
+        out_path.write_text(header + response)
+        console.print(f"\n[green]Playbook saved:[/green] {out_path}")
 
     # ------------------------------------------------------------------
     # Offer to log network findings
@@ -5786,7 +5831,7 @@ def cmd_network(args, console) -> None:
 # LATERAL MOVEMENT DECISION TREE (static reference)
 # ---------------------------------------------------------------------------
 
-_LATERAL_DECISION_TREE = r"""
+_LATERAL_DECISION_TREE = r"""\
 ## Lateral Movement Decision Tree
 
 ### You have: PLAINTEXT CREDENTIALS (domain user)
@@ -5935,7 +5980,7 @@ def cmd_lateral(args, console) -> None:
     Prompts for current access type, shows exact commands for each scenario.
     """
     eng = _require_engagement(console)
-    client = get_client_or_none()
+    client = get_client()
 
     technique = getattr(args, "technique",  None)
     from_host = getattr(args, "from_host",  None) or "<SOURCE_HOST>"
@@ -6017,15 +6062,12 @@ def cmd_lateral(args, console) -> None:
         f"All commands must be copy-paste ready with specific syntax."
     )
 
-    if client is None:
-        console.print("[dim]Set ANTHROPIC_API_KEY for an AI-generated, target-tailored lateral movement plan.[/dim]")
-    else:
-        stream_to_console(
-            client,
-            [{"role": "user", "content": prompt}],
-            max_tokens=3000,
-            console=console,
-        )
+    response = stream_to_console(
+        client,
+        [{"role": "user", "content": prompt}],
+        max_tokens=3000,
+        console=console,
+    )
 
     # ------------------------------------------------------------------
     # Technique quick-reference table
@@ -6201,36 +6243,6 @@ def _print_lateral_technique_table(console) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ARGPARSE ADDITIONS — paste into build_parser() in hakuza.py
-# ---------------------------------------------------------------------------
-#
-#   p_ad = sub.add_parser("ad", help="Active Directory pentest playbook (CRTP-grade)")
-#   p_ad.add_argument("--dc",     metavar="IP",     help="Domain Controller IP address")
-#   p_ad.add_argument("--domain", metavar="DOMAIN", help="Active Directory domain name")
-#   p_ad.add_argument("--user",   metavar="USER",   help="Starting domain user (if any)")
-#   p_ad.add_argument("--save",   action="store_true", help="Save playbook to reports/")
-#
-#   p_network = sub.add_parser("network", help="Network pentest playbook (nmap → MITM → pivot)")
-#   p_network.add_argument("--range",   metavar="CIDR",    help="Target IP range (e.g. 10.0.0.0/24)")
-#   p_network.add_argument("--profile", metavar="PROFILE", default="quick",
-#                          choices=["quick", "full", "stealth"],
-#                          help="Scan profile: quick (default), full, stealth")
-#   p_network.add_argument("--save", action="store_true", help="Save playbook to reports/")
-#
-#   p_lateral = sub.add_parser("lateral", help="Lateral movement decision tree + AI analysis")
-#   p_lateral.add_argument("--technique",  metavar="TECHNIQUE", help="Specific technique (pth, ptt, wmi, etc.)")
-#   p_lateral.add_argument("--from-host",  metavar="HOST",      help="Source host / IP")
-#   p_lateral.add_argument("--to-host",    metavar="HOST",      help="Target host / IP")
-
-# ---------------------------------------------------------------------------
-# DISPATCH ADDITIONS — paste into dispatch dict in main() in hakuza.py
-# ---------------------------------------------------------------------------
-#
-#   "ad":      cmd_ad,
-#   "network": cmd_network,
-#   "lateral": cmd_lateral,
-
-# END mod_ad_network.py
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -6759,6 +6771,7 @@ def cmd_dashboard(args, console: Console) -> None:
     # Non-blocking keyboard input (best-effort on Linux/macOS)
     def _kb_listener():
         """Read single characters from stdin without echo (Unix only)."""
+        import sys
         import termios
         import tty
         import select
@@ -6819,6 +6832,7 @@ def cmd_dashboard(args, console: Console) -> None:
                         findings = list_findings(eng["id"])
                         counts = get_finding_count(eng["id"])
                         # Re-fetch engagement in case it was updated
+                        from hakuza import get_current_engagement  # noqa: F401 — available in ns
                         fresh_eng = get_current_engagement()
                         if fresh_eng:
                             eng = fresh_eng
@@ -6846,33 +6860,6 @@ def cmd_dashboard(args, console: Console) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ARGPARSE ADDITIONS  (add to build_parser() in hakuza.py)
-# ---------------------------------------------------------------------------
-# In build_parser(), inside the sub-commands block, add:
-#
-#   # --- dashboard ---
-#   p_dash = sub.add_parser("dashboard", help="Live full-screen TUI dashboard")
-#   p_dash.add_argument(
-#       "--refresh", type=int, default=3, metavar="SECONDS",
-#       help="Auto-refresh interval in seconds (default: 3)"
-#   )
-#   p_dash.add_argument(
-#       "--no-ai", dest="no_ai", action="store_true",
-#       help="Disable AI analysis on startup"
-#   )
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# DISPATCH ADDITION  (add to the dispatch dict in main() in hakuza.py)
-# ---------------------------------------------------------------------------
-# Import at top of hakuza.py:
-#   from mod_dashboard import cmd_dashboard
-#
-# In the dispatch dict:
-#   "dashboard": cmd_dashboard,
-# ---------------------------------------------------------------------------
-
-# END mod_dashboard.py
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -6938,31 +6925,22 @@ def _parse_json_from_response(raw: str) -> object:
     """
     # Strip ```json ... ``` or ``` ... ``` fences
     cleaned = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip()
-    # Locate the outermost container. We must try whichever of '{' or '['
-    # appears FIRST in the string — otherwise an object that merely *contains*
-    # an array (e.g. {"prioritized": [...]}) gets mis-parsed as that inner
-    # array, breaking prioritize/matrix which expect a top-level object.
-    brace_idx = cleaned.find("{")
-    bracket_idx = cleaned.find("[")
-    candidates = []
-    if brace_idx != -1:
-        candidates.append((brace_idx, "{", "}"))
-    if bracket_idx != -1:
-        candidates.append((bracket_idx, "[", "]"))
-    candidates.sort()  # earliest opening char = outermost container
-    for idx, start_char, end_char in candidates:
-        # Find matching closing bracket
-        depth = 0
-        for i, ch in enumerate(cleaned[idx:], start=idx):
-            if ch == start_char:
-                depth += 1
-            elif ch == end_char:
-                depth -= 1
-                if depth == 0:
-                    try:
-                        return json.loads(cleaned[idx: i + 1])
-                    except json.JSONDecodeError:
-                        break
+    # Try to locate the first [ or {
+    for start_char, end_char in [("[", "]"), ("{", "}")]:
+        idx = cleaned.find(start_char)
+        if idx != -1:
+            # Find matching closing bracket
+            depth = 0
+            for i, ch in enumerate(cleaned[idx:], start=idx):
+                if ch == start_char:
+                    depth += 1
+                elif ch == end_char:
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            return json.loads(cleaned[idx: i + 1])
+                        except json.JSONDecodeError:
+                            break
     # Last resort — try parsing the whole cleaned string
     try:
         return json.loads(cleaned)
@@ -7016,6 +6994,15 @@ def cmd_deduplicate(args, console: Console) -> None:
     """
     eng = _require_engagement(console)
 
+    try:
+        client = get_client()
+    except SystemExit:
+        console.print(
+            "[red]Anthropic API key required for deduplication.[/red]\n"
+            "[dim]Set it with: hakuza config --set api_key=sk-...[/dim]"
+        )
+        return
+
     dry_run = getattr(args, "dry_run", False)
     auto = getattr(args, "auto", False)
 
@@ -7025,17 +7012,6 @@ def cmd_deduplicate(args, console: Console) -> None:
 
     if len(open_findings) < 2:
         console.print("[yellow]Fewer than 2 open findings — nothing to deduplicate.[/yellow]")
-        return
-
-    # Check for an API key only once we know there's actually work to do —
-    # no point blocking on an interactive key prompt for a no-op run.
-    try:
-        client = get_client()
-    except SystemExit:
-        console.print(
-            "[red]Anthropic API key required for deduplication.[/red]\n"
-            "[dim]Set it with: hakuza config --set api_key=sk-...[/dim]"
-        )
         return
 
     console.print(
@@ -7165,14 +7141,14 @@ If no duplicates are found, return an empty array: []"""
     for g in valid_groups:
         pf = g["primary"]
         dup_titles = "\n".join(
-            _rich_escape(f"{d.get('short_id', d['id'][:8])}: {d.get('title', '')[:50]}")
+            f"{d.get('short_id', d['id'][:8])}: {d.get('title', '')[:50]}"
             for d in g["duplicates"]
         )
         table.add_row(
-            _rich_escape(f"{pf.get('short_id', pf['id'][:8])}: {pf.get('title', '')[:60]}"),
+            f"{pf.get('short_id', pf['id'][:8])}: {pf.get('title', '')[:60]}",
             sev_badge(pf.get("severity", "info")),
             dup_titles,
-            _rich_escape(g["reason"][:120]),
+            g["reason"][:120],
         )
 
     console.print(table)
@@ -7195,13 +7171,13 @@ If no duplicates are found, return an empty array: []"""
 
         if not auto:
             console.print(
-                f"\n[bold]Group:[/bold] Keep [cyan]{_rich_escape(str(pf.get('short_id', pf['id'][:8])))}[/cyan] "
-                f"— [italic]{_rich_escape(str(pf.get('title', '')))}[/italic]"
+                f"\n[bold]Group:[/bold] Keep [cyan]{pf.get('short_id', pf['id'][:8])}[/cyan] "
+                f"— [italic]{pf.get('title', '')}[/italic]"
             )
             for df in g["duplicates"]:
                 console.print(
-                    f"  Mark duplicate: [red]{_rich_escape(str(df.get('short_id', df['id'][:8])))}[/red] "
-                    f"— {_rich_escape(str(df.get('title', ''))[:60])}"
+                    f"  Mark duplicate: [red]{df.get('short_id', df['id'][:8])}[/red] "
+                    f"— {df.get('title', '')[:60]}"
                 )
             apply = Confirm.ask("  Mark these as duplicates?", default=True)
 
@@ -7232,7 +7208,7 @@ If no duplicates are found, return an empty array: []"""
 # cmd_enrich
 # ---------------------------------------------------------------------------
 
-_ENRICH_PROMPT_TEMPLATE = r"""
+_ENRICH_PROMPT_TEMPLATE = """\
 Enrich this finding with precise CVSS v3.1 scoring and categorization.
 Title: {title}
 Description: {description}
@@ -7271,6 +7247,15 @@ def cmd_enrich(args, console: Console) -> None:
     """
     eng = _require_engagement(console)
 
+    try:
+        client = get_client()
+    except SystemExit:
+        console.print(
+            "[red]Anthropic API key required for enrichment.[/red]\n"
+            "[dim]Set it with: hakuza config --set api_key=sk-...[/dim]"
+        )
+        return
+
     enrich_all = getattr(args, "all", False)
     missing_cvss = getattr(args, "missing_cvss", False)
     missing_cwe = getattr(args, "missing_cwe", False)
@@ -7306,17 +7291,6 @@ def cmd_enrich(args, console: Console) -> None:
 
     if not target_findings:
         console.print("[green]All findings already have the requested enrichment fields.[/green]")
-        return
-
-    # Check for an API key only once we know there's actually work to do —
-    # no point blocking on an interactive key prompt for a no-op run.
-    try:
-        client = get_client()
-    except SystemExit:
-        console.print(
-            "[red]Anthropic API key required for enrichment.[/red]\n"
-            "[dim]Set it with: hakuza config --set api_key=sk-...[/dim]"
-        )
         return
 
     console.print(
@@ -7427,13 +7401,13 @@ def cmd_enrich(args, console: Console) -> None:
                 if r["cvss_score"] is not None else "[dim]-[/dim]"
             )
             table.add_row(
-                _rich_escape(str(r["short_id"])),
+                r["short_id"],
                 sev_badge(r["severity"]),
-                _rich_escape(str(r["title"])[:50]),
+                r["title"][:50],
                 before_cvss,
                 after_cvss,
-                _rich_escape((r["cwe"] or "-")[:30]),
-                _rich_escape((r["owasp"] or "-")[:25]),
+                (r["cwe"] or "-")[:30],
+                (r["owasp"] or "-")[:25],
             )
 
         console.print(table)
@@ -7485,6 +7459,15 @@ def cmd_prioritize(args, console: Console) -> None:
     """
     eng = _require_engagement(console)
 
+    try:
+        client = get_client()
+    except SystemExit:
+        console.print(
+            "[red]Anthropic API key required for prioritization.[/red]\n"
+            "[dim]Set it with: hakuza config --set api_key=sk-...[/dim]"
+        )
+        return
+
     fmt = getattr(args, "format", "table") or "table"
     bfsi = getattr(args, "bfsi", False)
 
@@ -7493,17 +7476,6 @@ def cmd_prioritize(args, console: Console) -> None:
 
     if not open_findings:
         console.print("[yellow]No open findings to prioritize.[/yellow]")
-        return
-
-    # Check for an API key only once we know there's actually work to do —
-    # no point blocking on an interactive key prompt for a no-op run.
-    try:
-        client = get_client()
-    except SystemExit:
-        console.print(
-            "[red]Anthropic API key required for prioritization.[/red]\n"
-            "[dim]Set it with: hakuza config --set api_key=sk-...[/dim]"
-        )
         return
 
     counts = get_finding_count(eng["id"])
@@ -7603,8 +7575,8 @@ Return ONLY valid JSON (no markdown, no preamble):
     console.print(Rule("[bold red]Fix This First[/bold red]", style="dim red"))
     console.print(
         Panel(
-            f"[bold]Finding:[/bold] [cyan]{_rich_escape(str(fix_first_id))}[/cyan]\n\n"
-            f"{_rich_escape(str(fix_first_reason))}",
+            f"[bold]Finding:[/bold] [cyan]{fix_first_id}[/cyan]\n\n"
+            f"{fix_first_reason}",
             title="[bold red]  Highest Risk-Reduction Fix[/bold red]",
             border_style="red",
             expand=False,
@@ -7647,13 +7619,13 @@ def _render_priority_table(prioritized: list, bfsi: bool, console: Console) -> N
         title = item.get("title", "")[:60]
         cvss = str(item.get("cvss", "-"))
         effort_key = str(item.get("effort", "")).lower()
-        effort_str = effort_style.get(effort_key, _rich_escape(effort_key))
+        effort_str = effort_style.get(effort_key, effort_key)
         risk_key = item.get("business_risk", "")
-        risk_str = risk_style.get(risk_key, _rich_escape(str(risk_key)))
-        deadline = _rich_escape(str(item.get("deadline", "")))
-        rationale = _rich_escape(str(item.get("rationale", ""))[:100])
+        risk_str = risk_style.get(risk_key, risk_key)
+        deadline = item.get("deadline", "")
+        rationale = item.get("rationale", "")[:100]
 
-        table.add_row(rank, _rich_escape(f"{sid}: {title}"), cvss, effort_str, risk_str, deadline, rationale)
+        table.add_row(rank, f"{sid}: {title}", cvss, effort_str, risk_str, deadline, rationale)
 
     console.print(table)
 
@@ -7669,7 +7641,7 @@ def _render_priority_matrix(prioritized: list, console: Console) -> None:
         is_high_impact = risk_key in ("critical", "high")
         is_quick = effort_key == "quick"
 
-        entry = _rich_escape(f"{item.get('short_id', '?')}: {item.get('title', '')[:35]}")
+        entry = f"{item.get('short_id', '?')}: {item.get('title', '')[:35]}"
 
         if is_high_impact and is_quick:
             q1.append(entry)          # Quick Wins
@@ -7716,7 +7688,7 @@ def _render_priority_timeline(prioritized: list, bfsi: bool, console: Console) -
     for item in prioritized:
         risk = str(item.get("business_risk", "medium")).lower()
         effort = str(item.get("effort", "moderate")).lower()
-        entry = _rich_escape(f"{item.get('short_id', '?')}: {item.get('title', '')[:50]}")
+        entry = f"{item.get('short_id', '?')}: {item.get('title', '')[:50]}"
 
         if risk == "critical" or (risk == "high" and effort == "quick"):
             week1.append(entry)
@@ -7782,17 +7754,6 @@ def cmd_matrix(args, console: Console) -> None:
     """
     eng = _require_engagement(console)
 
-    save = getattr(args, "save", False)
-
-    findings = list_findings(eng["id"])
-    open_findings = [f for f in findings if f.get("status") not in ("remediated", "fp")]
-
-    if len(open_findings) < 2:
-        console.print("[yellow]Need at least 2 open findings to build an attack chain matrix.[/yellow]")
-        return
-
-    # Check for an API key only once we know there's actually work to do —
-    # no point blocking on an interactive key prompt for a no-op run.
     try:
         client = get_client()
     except SystemExit:
@@ -7800,6 +7761,15 @@ def cmd_matrix(args, console: Console) -> None:
             "[red]Anthropic API key required for matrix generation.[/red]\n"
             "[dim]Set it with: hakuza config --set api_key=sk-...[/dim]"
         )
+        return
+
+    save = getattr(args, "save", False)
+
+    findings = list_findings(eng["id"])
+    open_findings = [f for f in findings if f.get("status") not in ("remediated", "fp")]
+
+    if len(open_findings) < 2:
+        console.print("[yellow]Need at least 2 open findings to build an attack chain matrix.[/yellow]")
         return
 
     # Cap at 20 findings to keep the matrix readable
@@ -7951,7 +7921,7 @@ def _render_chain_matrix_table(
         row_sid = row_f.get("short_id", row_f["id"][:8])
         row_sev = (row_f.get("severity") or "info").lower()
         sev_label = sev_abbr.get(row_sev, "?")
-        row_label = _rich_escape(f"{row_sid[:10]} [{sev_label}]")
+        row_label = f"{row_sid[:10]} [{sev_label}]"
 
         cells = []
         for col_sid in col_ids:
@@ -7980,20 +7950,20 @@ def _render_top_chains(top_chains: list, console: Console) -> None:
     for i, chain in enumerate(top_chains[:3], start=1):
         sev = (chain.get("severity") or "medium").lower()
         color = sev_colors.get(sev, "cyan")
-        cvss = _rich_escape(str(chain.get("cvss_chain_score", "?")))
+        cvss = chain.get("cvss_chain_score", "?")
         steps = chain.get("steps", [])
-        steps_text = "\n".join(f"  {j}. {_rich_escape(str(s))}" for j, s in enumerate(steps, start=1))
+        steps_text = "\n".join(f"  {j}. {s}" for j, s in enumerate(steps, start=1))
 
         body = (
             f"[bold]Severity:[/bold] {sev_badge(sev)}  [bold]CVSS Chain:[/bold] {cvss}\n\n"
             f"[bold underline]Steps:[/bold underline]\n{steps_text}\n\n"
-            f"[bold]End Impact:[/bold] {_rich_escape(str(chain.get('end_impact', 'N/A')))}"
+            f"[bold]End Impact:[/bold] {chain.get('end_impact', 'N/A')}"
         )
 
         console.print(
             Panel(
                 body,
-                title=f"[bold {color}]  Chain {i}: {_rich_escape(str(chain.get('chain_title', 'Unknown')))}[/bold {color}]",
+                title=f"[bold {color}]  Chain {i}: {chain.get('chain_title', 'Unknown')}[/bold {color}]",
                 border_style=color,
                 expand=False,
             )
@@ -8009,6 +7979,7 @@ def _save_matrix_to_file(
     console: Console,
 ) -> None:
     """Serialize the matrix and chains to a markdown file in the engagement dir."""
+    from pathlib import Path
 
     eng_name = eng.get("name", "engagement")
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -8369,85 +8340,6 @@ Two paragraphs:
 *Report generated by HAKUZA {_HAKUZA_VERSION} on {now_str}. Assessor: {tester} ({_TESTER_CREDS}). Classification: CONFIDENTIAL — Restricted Distribution.*"""
 
 
-def _build_fallback_report_md(eng: dict, findings: list, counts: dict, score: int,
-                              report_type: str, client_name: str, recon_summary: dict) -> str:
-    """
-    Deterministic (non-AI) report body used when no ANTHROPIC_API_KEY is available.
-    No narrative analysis — just a structured dump of what's actually in the DB,
-    so a report is still produced rather than nothing at all.
-    """
-    now_str = datetime.now().strftime("%Y-%m-%d")
-    tester = eng.get("tester", _TESTER_NAME)
-    target = eng.get("target", "N/A")
-    eng_type = eng.get("type", "web")
-    total = sum(counts.values())
-
-    lines = [
-        f"# {report_type.title()} Penetration Test Report — {eng.get('name','')}",
-        "",
-        f"**Client:** {client_name}  |  **Target:** {target}  |  **Type:** {eng_type}",
-        f"**Date:** {now_str}  |  **Assessor:** {tester} ({_TESTER_CREDS})",
-        "",
-        "> Generated without AI narrative (no `ANTHROPIC_API_KEY` set). "
-        "Set one and re-run `hakuza report` for a full written analysis and attack-chain reasoning.",
-        "",
-        "## Executive Summary",
-        "",
-        f"**Overall Risk Score:** {score}/100 ({_risk_label(score)})  |  **Total Findings:** {total}",
-        "",
-        "| Severity | Count |",
-        "|---|---|",
-        f"| Critical | {counts.get('critical', 0)} |",
-        f"| High | {counts.get('high', 0)} |",
-        f"| Medium | {counts.get('medium', 0)} |",
-        f"| Low | {counts.get('low', 0)} |",
-        f"| Informational | {counts.get('informational', 0)} |",
-        "",
-    ]
-
-    if recon_summary:
-        lines.append("## Reconnaissance Summary")
-        lines.append("")
-        for k, v in recon_summary.items():
-            lines.append(f"- **{k}:** {v}")
-        lines.append("")
-
-    lines.append("## Findings")
-    lines.append("")
-    if not findings:
-        lines.append("_No findings recorded for this engagement._")
-    else:
-        sev_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "informational": 4}
-        for f in sorted(findings, key=lambda x: sev_order.get((x.get("severity") or "informational").lower(), 5)):
-            sev = (f.get("severity") or "informational").upper()
-            title = f.get("title", "Unknown")
-            short_id = f.get("short_id", "")
-            meta = " | ".join(
-                filter(None, [
-                    f"CVSS: {f['cvss_score']}" if f.get("cvss_score") else "",
-                    f"CWE: {f['cwe']}" if f.get("cwe") else "",
-                    f"Status: {f.get('status', 'open')}",
-                ])
-            )
-            lines.append(f"### [{sev}] {title} ({short_id})")
-            lines.append("")
-            if f.get("url"):
-                lines.append(f"- **URL/Component:** {f['url']}")
-            if meta:
-                lines.append(f"- {meta}")
-            if f.get("description"):
-                lines.append(f"- **Description:** {f['description']}")
-            if f.get("remediation"):
-                lines.append(f"- **Remediation:** {f['remediation']}")
-            lines.append("")
-
-    lines.append("---")
-    lines.append(f"*Report generated by HAKUZA {_HAKUZA_VERSION} on {now_str} (findings-only mode, no AI narrative). "
-                 f"Assessor: {tester} ({_TESTER_CREDS}). Classification: CONFIDENTIAL — Restricted Distribution.*")
-
-    return "\n".join(lines)
-
-
 # ---------------------------------------------------------------------------
 # SVG COMPONENTS
 # ---------------------------------------------------------------------------
@@ -8546,27 +8438,22 @@ def _finding_card_html(f: dict, idx: int) -> str:
     color = _SEV_HTML_COLORS.get(sev, "#8b949e")
     bg = _SEV_HTML_BG.get(sev, "rgba(139,148,158,0.1)")
     short_id = f.get("short_id") or f"F{idx:03d}"
-    # Every field below can originate from a scanned target (a nuclei finding's
-    # title, or a pentester pasting a raw XSS payload into a description) —
-    # all must be HTML-escaped before interpolation, or the report itself
-    # becomes a stored-XSS vector when opened in a browser.
-    title = html.escape(f.get("title") or "Untitled Finding")
+    title = (f.get("title") or "Untitled Finding").replace("<", "&lt;").replace(">", "&gt;")
     cvss = f.get("cvss_score")
     cvss_str = f"{cvss:.1f}" if cvss is not None else "N/A"
     cvss_color = ("#f85149" if (cvss or 0) >= 9.0 else
                   "#d29922" if (cvss or 0) >= 7.0 else
                   "#ecc94b" if (cvss or 0) >= 4.0 else
                   "#3fb950")
-    cwe = html.escape(f.get("cwe") or "")
-    url_raw = f.get("url") or ""
-    url = html.escape(url_raw)
-    status = html.escape((f.get("status") or "open").capitalize())
-    owasp = html.escape(f.get("owasp") or "")
-    mitre = html.escape(f.get("mitre") or "")
-    desc = html.escape(f.get("description") or "No description provided.")
-    impact = html.escape(f.get("impact") or "Impact not specified.")
-    remediation = html.escape(f.get("remediation") or "Remediation not specified.")
-    refs = f.get("refs") or ""
+    cwe = (f.get("cwe") or "").replace("<", "&lt;")
+    url = (f.get("url") or "").replace("<", "&lt;").replace(">", "&gt;")
+    status = (f.get("status") or "open").capitalize()
+    owasp = (f.get("owasp") or "").replace("<", "&lt;")
+    mitre = (f.get("mitre") or "").replace("<", "&lt;")
+    desc = (f.get("description") or "No description provided.")
+    impact = (f.get("impact") or "Impact not specified.")
+    remediation = (f.get("remediation") or "Remediation not specified.")
+    refs = (f.get("refs") or "")
 
     meta_parts = []
     if cwe:
@@ -8576,13 +8463,12 @@ def _finding_card_html(f: dict, idx: int) -> str:
     if mitre:
         meta_parts.append(f'<span class="meta-tag">MITRE: {mitre}</span>')
     if url:
-        url_display = html.escape(url_raw[:60] + ("…" if len(url_raw) > 60 else ""))
-        meta_parts.append(f'<span class="meta-tag url-tag" title="{url}">URL: {url_display}</span>')
+        meta_parts.append(f'<span class="meta-tag url-tag" title="{url}">URL: {url[:60]}{"…" if len(url)>60 else ""}</span>')
     meta_parts.append(f'<span class="meta-tag status-tag">{status}</span>')
 
     refs_html = ""
     if refs:
-        refs_esc = html.escape(refs)
+        refs_esc = refs.replace("<", "&lt;").replace(">", "&gt;")
         refs_html = f"<h4>References</h4><p class='refs-text'>{refs_esc}</p>"
 
     return f"""<div class="finding-card sev-{sev}" id="finding-{short_id}" style="border-left-color:{color};background:{bg}">
@@ -8623,15 +8509,10 @@ def _generate_hakuza_html_report(
     """
     now_str = datetime.now().strftime("%Y-%m-%d")
     now_long = datetime.now().strftime("%B %d, %Y")
-    # client/target/tester are free-text (no slug validation like the
-    # engagement name has) and end up in HTML — including inside <title>,
-    # an RCDATA context where a literal "</title>" would terminate early and
-    # let subsequent content be parsed as markup. Escape at the source so
-    # every use below is safe by construction.
-    client_name = html.escape(eng.get("client") or eng.get("client_name") or "Confidential Client")
-    tester = html.escape(eng.get("tester") or _TESTER_NAME)
-    target = html.escape(eng.get("target") or eng.get("target_url") or "N/A")
-    eng_type = html.escape((eng.get("type") or "web").upper())
+    client_name = eng.get("client") or eng.get("client_name") or "Confidential Client"
+    tester = eng.get("tester") or _TESTER_NAME
+    target = eng.get("target") or eng.get("target_url") or "N/A"
+    eng_type = (eng.get("type") or "web").upper()
     eng_name = eng.get("name") or "engagement"
     risk_label = _risk_label(score)
     risk_color = _risk_color(score)
@@ -8643,17 +8524,9 @@ def _generate_hakuza_html_report(
     c_low  = counts.get("low", 0)
     c_info = counts.get("informational", 0)
 
-    # Convert markdown body to HTML using markdown2. safe_mode="escape" is load-
-    # bearing here, not optional: markdown_content embeds raw finding data
-    # (title/url/description/etc.) that can legitimately contain literal
-    # "<script>...</script>" — e.g. a pentester documenting the exact XSS
-    # payload they used, or a nuclei finding whose title reflects target
-    # content. Without safe_mode, markdown2 passes embedded HTML through
-    # unescaped, turning the pentester's own report into a stored-XSS
-    # vector when opened in a browser.
+    # Convert markdown body to HTML using markdown2
     md_html = markdown2.markdown(
         markdown_content or "",
-        safe_mode="escape",
         extras=["fenced-code-blocks", "tables", "header-ids",
                 "break-on-newline", "strike", "code-friendly"],
     )
@@ -8670,7 +8543,7 @@ def _generate_hakuza_html_report(
     # Navigation anchors from markdown headers
     nav_items = []
     for m in re.finditer(r'^## (\d+)\. (.+)$', markdown_content or "", re.MULTILINE):
-        num, heading = m.group(1), html.escape(m.group(2).strip())
+        num, heading = m.group(1), m.group(2).strip()
         anchor = f"section-{num}"
         nav_items.append(f'<a href="#{anchor}" class="nav-item">{num}. {heading}</a>')
     nav_html = "\n".join(nav_items)
@@ -9408,7 +9281,7 @@ def cmd_diff_report(args, console) -> None:
                 return {(f.get("short_id") or f.get("id") or f.get("title", "")): f for f in data}
             return {}
         except (json.JSONDecodeError, OSError) as exc:
-            console.print(f"[red]Failed to parse {path}: {_rich_escape(str(exc))}[/red]")
+            console.print(f"[red]Failed to parse {path}: {exc}[/red]")
             return {}
 
     old_map = _load(old_file)
@@ -9450,6 +9323,7 @@ def cmd_diff_report(args, console) -> None:
     console.print(Rule("[bold cyan]Finding Delta Report[/bold cyan]"))
     console.print(f"[dim]Old: {old_file}  |  New: {new_file}  |  Generated: {now_str}[/dim]\n")
 
+    from rich.table import Table
     from rich import box as rbox
 
     def _sev_color(sev):
@@ -9466,8 +9340,8 @@ def cmd_diff_report(args, console) -> None:
         for f in new_findings:
             sev = (f.get("severity") or "info").lower()
             t.add_row(
-                _rich_escape(str(f.get("short_id", "-"))),
-                _rich_escape((f.get("title") or "")[:60]),
+                f.get("short_id", "-"),
+                (f.get("title") or "")[:60],
                 f.get("severity", "info").upper(),
                 str(f.get("cvss_score") or "-"),
                 style=_sev_color(sev),
@@ -9482,8 +9356,8 @@ def cmd_diff_report(args, console) -> None:
         t.add_column("Previous Severity", width=16)
         for f in fixed_findings:
             t.add_row(
-                _rich_escape(str(f.get("short_id", "-"))),
-                _rich_escape((f.get("title") or "")[:60]),
+                f.get("short_id", "-"),
+                (f.get("title") or "")[:60],
                 (f.get("severity") or "").upper(),
                 style="dim",
             )
@@ -9500,8 +9374,8 @@ def cmd_diff_report(args, console) -> None:
         t.add_column("New Status", width=12)
         for ch in changed_findings:
             t.add_row(
-                _rich_escape(str(ch["new"].get("short_id", "-"))),
-                _rich_escape((ch["new"].get("title") or "")[:50]),
+                ch["new"].get("short_id", "-"),
+                (ch["new"].get("title") or "")[:50],
                 (ch["old"].get("severity") or "").upper(),
                 (ch["new"].get("severity") or "").upper(),
                 (ch["old"].get("status") or "").lower(),
@@ -9538,7 +9412,7 @@ def cmd_diff_report(args, console) -> None:
             Path(output_file).write_text(json.dumps(delta, indent=2), encoding="utf-8")
             console.print(f"\n[green]Delta report saved:[/green] {output_file}")
         except OSError as exc:
-            console.print(f"[red]Failed to save delta report: {_rich_escape(str(exc))}[/red]")
+            console.print(f"[red]Failed to save delta report: {exc}[/red]")
 
 
 # ---------------------------------------------------------------------------
@@ -9553,8 +9427,15 @@ def cmd_report(args, console) -> None:
     Streams Claude's analysis, then produces an optional standalone HTML file
     with SVG risk gauge, bar chart, and collapsible finding cards.
     """
+    # Import from hakuza.py namespace (available at merge time)
+    from hakuza import (
+        _require_engagement, get_client, list_findings,
+        get_finding_count, get_recon_summary, get_config_value,
+        stream_to_console, print_engagement_header, ENGAGEMENTS_DIR,
+    )
+
     eng = _require_engagement(console)
-    ai_client = get_client_or_none()
+    ai_client = get_client()
 
     # ── Gather data ──────────────────────────────────────────────────────
     findings = list_findings(eng["id"])
@@ -9588,20 +9469,13 @@ def cmd_report(args, console) -> None:
         recon_items = ", ".join(f"{k}:{v}" for k, v in recon_summary.items())
         console.print(f"[dim]  Recon data: {recon_items}[/dim]\n")
 
-    # ── Build and stream prompt, or fall back to a deterministic report ──
-    if ai_client is None:
-        console.print(
-            "[dim]No ANTHROPIC_API_KEY set — generating a findings-only report "
-            "without AI narrative. Set a key and re-run for full analysis.[/dim]\n"
-        )
-        full_md = _build_fallback_report_md(eng, findings, counts, score, report_type, client_name, recon_summary)
-    else:
-        prompt = _build_report_prompt(eng, findings, counts, score, report_type, client_name)
-        messages = [{"role": "user", "content": prompt}]
+    # ── Build and stream prompt ──────────────────────────────────────────
+    prompt = _build_report_prompt(eng, findings, counts, score, report_type, client_name)
+    messages = [{"role": "user", "content": prompt}]
 
-        console.print(Rule("[dim]Claude Analysis[/dim]"))
-        full_md = stream_to_console(ai_client, messages, max_tokens=8192, console=console)
-        console.print(Rule())
+    console.print(Rule("[dim]Claude Analysis[/dim]"))
+    full_md = stream_to_console(ai_client, messages, max_tokens=8192, console=console)
+    console.print(Rule())
 
     # ── Save markdown ────────────────────────────────────────────────────
     safe_name = re.sub(r"[^\w-]", "_", eng.get("name", "report"))
@@ -9619,7 +9493,7 @@ def cmd_report(args, console) -> None:
         out_md.write_text(full_md or "", encoding="utf-8")
         console.print(f"[green]Markdown report saved:[/green] {out_md}")
     except OSError as exc:
-        console.print(f"[yellow]Could not save markdown: {_rich_escape(str(exc))}[/yellow]")
+        console.print(f"[yellow]Could not save markdown: {exc}[/yellow]")
 
     # ── Generate HTML ────────────────────────────────────────────────────
     if gen_html:
@@ -9637,7 +9511,7 @@ def cmd_report(args, console) -> None:
             console.print(f"[green]HTML report saved:[/green] {out_html}")
             console.print(f"[dim]  Open in browser: file://{out_html.resolve()}[/dim]")
         except Exception as exc:
-            console.print(f"[red]HTML generation failed: {_rich_escape(str(exc))}[/red]")
+            console.print(f"[red]HTML generation failed: {exc}[/red]")
 
     # ── Summary panel ────────────────────────────────────────────────────
     sev_line = (
@@ -9718,6 +9592,8 @@ Append argparse sub-commands and dispatch entries from bottom of this file.
 
 def _require_engagement(console: Console) -> dict:
     """Return current engagement dict or print error and exit."""
+    # Import from parent module at call time to avoid circular issues
+    from hakuza import get_current_engagement
     eng = get_current_engagement()
     if not eng:
         console.print(
@@ -9750,25 +9626,10 @@ def _section(console: Console, title: str) -> None:
 def _offer_finding(console: Console, eng: dict, title: str, severity: str,
                    description: str, remediation: str, tool: str = "hakuza-mobile") -> None:
     """Prompt the tester to add a finding to the engagement DB."""
-    # Guard against non-interactive stdin (piped input, CI, demo scripts):
-    # an unguarded Confirm/Prompt raises EOFError, which otherwise crashes the
-    # whole command with "Error: EOF when reading a line" after all the useful
-    # reference output has already printed. Degrade to "skip" instead.
-    try:
-        do_log = Confirm.ask(
-            f"\n[yellow]Add '[bold]{_rich_escape(str(title))}[/bold]' as a {severity.upper()} finding?[/yellow]",
-            default=False,
-        )
-    except (EOFError, KeyboardInterrupt):
-        console.print("\n[dim]No interactive input — skipping finding log.[/dim]")
-        return
-    if do_log:
-        try:
-            url = Prompt.ask("  URL / identifier", default=eng.get("target", ""))
-            evidence = Prompt.ask("  Evidence (paste key line or leave blank)", default="")
-        except (EOFError, KeyboardInterrupt):
-            url = eng.get("target", "")
-            evidence = ""
+    from hakuza import add_finding
+    if Confirm.ask(f"\n[yellow]Add '[bold]{title}[/bold]' as a {severity.upper()} finding?[/yellow]", default=False):
+        url = Prompt.ask("  URL / identifier", default=eng.get("target", ""))
+        evidence = Prompt.ask("  Evidence (paste key line or leave blank)", default="")
         f = add_finding(
             engagement_id=eng["id"],
             title=title,
@@ -9792,6 +9653,11 @@ def cmd_mobile(args, console: Console) -> None:
 
     Android security testing: static analysis, dynamic analysis, OWASP Mobile Top 10.
     """
+    from hakuza import (
+        get_client_or_none, get_client, stream_to_console,
+        SYSTEM_PROMPT, HAKUZA_DIR, run_tool, ENGAGEMENTS_DIR,
+    )
+
     eng = _require_engagement(console)
     apk_path = getattr(args, "apk", None)
     package = getattr(args, "package", None)
@@ -10049,6 +9915,8 @@ def cmd_ios(args, console: Console) -> None:
 
     iOS security testing: static analysis, dynamic analysis, OWASP Mobile Top 10.
     """
+    from hakuza import get_client_or_none, stream_to_console, run_tool, ENGAGEMENTS_DIR
+
     eng = _require_engagement(console)
     ipa_path = getattr(args, "ipa", None)
     bundle_id = getattr(args, "bundle", None)
@@ -10217,6 +10085,8 @@ def cmd_cloud(args, console: Console) -> None:
 
     Cloud security testing: AWS, Azure, GCP attack paths + BFSI compliance.
     """
+    from hakuza import get_client_or_none, stream_to_console, run_tool
+
     eng = _require_engagement(console)
     provider = getattr(args, "provider", "all") or "all"
     target = getattr(args, "target", None) or eng.get("target", "")
@@ -10448,6 +10318,8 @@ def cmd_iot(args, console: Console) -> None:
 
     IoT/OT security testing: protocol-specific checks, default credentials, firmware hints.
     """
+    from hakuza import get_client_or_none, stream_to_console, run_tool
+
     eng = _require_engagement(console)
     target_ip = getattr(args, "target", None) or eng.get("target", "<target-ip>")
     protocol = getattr(args, "protocol", "all") or "all"
@@ -10641,62 +10513,2047 @@ def cmd_iot(args, console: Console) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ARGPARSE ADDITIONS
-# Append these sub-commands to the parser returned by build_parser().
-# Call register_mobile_cloud_commands(sub) where sub = parser.add_subparsers(...)
-# ---------------------------------------------------------------------------
 
-def register_mobile_cloud_commands(sub) -> None:
-    """Register mobile, ios, cloud, and iot sub-commands on an existing subparser."""
 
-    # mobile
-    p_mobile = sub.add_parser("mobile", help="Android security testing (static + dynamic)")
-    p_mobile.add_argument("--apk", default=None, metavar="PATH", help="Path to APK file")
-    p_mobile.add_argument("--package", default=None, metavar="PKG",
-                          help="App package name e.g. com.example.app")
-    p_mobile.add_argument("--phase", choices=["static", "dynamic", "full"],
-                          default="full", help="Analysis phase (default: full)")
+# ──────────────────────────────────────────────────────────────────────────
+# MODULE: mod_recon_plus.py
+# ──────────────────────────────────────────────────────────────────────────
 
-    # ios
-    p_ios = sub.add_parser("ios", help="iOS security testing (static + dynamic)")
-    p_ios.add_argument("--ipa", default=None, metavar="PATH", help="Path to IPA file")
-    p_ios.add_argument("--bundle", default=None, metavar="BUNDLE_ID",
-                       help="Bundle ID e.g. com.example.app")
+"""
+mod_recon_plus.py — HAKUZA Enhanced Reconnaissance & Workflow Module
 
-    # cloud
-    p_cloud = sub.add_parser("cloud", help="Cloud security testing (AWS / Azure / GCP)")
-    p_cloud.add_argument("--provider", choices=["aws", "azure", "gcp", "all"],
-                         default="all", help="Cloud provider (default: all)")
-    p_cloud.add_argument("--target", default=None, metavar="URL_OR_ACCOUNT",
-                         help="Target URL, account ID, or domain")
-    p_cloud.add_argument("--profile", default="default", metavar="PROFILE",
-                         help="AWS CLI profile to use (default: default)")
+Adds: cmd_wayback, cmd_secrets, cmd_fuzz, cmd_wizard, cmd_scope, cmd_config (replacement)
 
-    # iot
-    p_iot = sub.add_parser("iot", help="IoT/OT security testing")
-    p_iot.add_argument("--target", default=None, metavar="IP",
-                       help="Target IP address")
-    p_iot.add_argument("--protocol",
-                       choices=["all", "mqtt", "rtsp", "modbus", "snmp"],
-                       default="all", help="Protocol focus (default: all)")
-
+Drop into the same directory as hakuza.py.  The bottom of this file shows the
+argparse additions and dispatch table entries needed in hakuza.py's build_parser()
+and main() functions.
+"""
 
 # ---------------------------------------------------------------------------
-# DISPATCH ADDITIONS
-# Merge this dict into the dispatch table in hakuza.py main():
-#
-#   from mod_mobile_cloud import MOBILE_CLOUD_DISPATCH
-#   dispatch.update(MOBILE_CLOUD_DISPATCH)
+# stdlib + optional deps
+# ---------------------------------------------------------------------------
+import fnmatch
+
+try:
+    import requests
+    HAS_REQUESTS = True
+except ImportError:
+    HAS_REQUESTS = False
+
+# ---------------------------------------------------------------------------
+# HAKUZA core imports  (available when this module is loaded from hakuza.py context)
+# These names are resolved at call-time from the hakuza module's global namespace.
+# If loaded standalone for testing, they are imported lazily.
 # ---------------------------------------------------------------------------
 
-MOBILE_CLOUD_DISPATCH = {
-    "mobile": cmd_mobile,
-    "ios":    cmd_ios,
-    "cloud":  cmd_cloud,
-    "iot":    cmd_iot,
+def _hakuza():
+    """Lazy import of the hakuza module so this file is importable standalone."""
+    import importlib
+    return importlib.import_module("hakuza")
+
+
+def _n(attr):
+    """Fetch an attribute from the hakuza module at call-time."""
+    return getattr(_hakuza(), attr)
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+def _require_engagement(console):
+    """Delegate to hakuza._require_engagement."""
+    return _n("_require_engagement")(console)
+
+
+def _get_client_or_none():
+    return _n("get_client_or_none")()
+
+
+def _get_client():
+    return _n("get_client")()
+
+
+def _stream(client, messages, max_tokens, console):
+    return _n("stream_to_console")(client, messages, max_tokens, console)
+
+
+def _ask(client, prompt, max_tokens=1500):
+    return _n("ask_claude")(client, prompt, max_tokens)
+
+
+def _add_finding(eng_id, **kwargs):
+    return _n("add_finding")(eng_id, **kwargs)
+
+
+def _add_recon(eng_id, data_type, content, source=None):
+    return _n("add_recon_data")(eng_id, data_type, content, source)
+
+
+def _run_tool(cmd, timeout=120, input_data=None):
+    return _n("run_tool")(cmd, timeout, input_data)
+
+
+def _check_tools():
+    return _n("check_tools")()
+
+
+def _extract_domain(target):
+    return _n("_extract_domain")(target)
+
+
+# Rich helpers resolved lazily
+def _console_module():
+    from rich.console import Console
+    return Console
+
+
+def _rich():
+    from rich.panel import Panel
+    from rich.rule import Rule
+    from rich.table import Table
+    from rich.markdown import Markdown
+    from rich.prompt import Prompt, Confirm
+    from rich.progress import Progress, SpinnerColumn, TextColumn
+    from rich import box
+    return Panel, Rule, Table, Markdown, Prompt, Confirm, Progress, SpinnerColumn, TextColumn, box
+
+
+# ---------------------------------------------------------------------------
+# URL collection utilities (used by cmd_wayback)
+# ---------------------------------------------------------------------------
+
+_SENSITIVE_PATH_RE = re.compile(
+    r"(/admin|/api/v\d|/v\d/|/graphql|/\.env|/backup|/\.git|/config|"
+    r"/actuator|/swagger|/metrics|/debug|/console|/manage|/phpmyadmin|"
+    r"/wp-admin|/wp-login|/xmlrpc)",
+    re.IGNORECASE,
+)
+
+_PARAM_URL_RE = re.compile(r"\?[^=\s]+=[^&\s]+")
+
+_INTERESTING_EXT_RE = re.compile(
+    r"\.(php|asp|aspx|jsp|jspx|bak|sql|config|conf|env|xml|log|backup|tar|gz|zip|rar)(\?|$)",
+    re.IGNORECASE,
+)
+
+_API_PATH_RE = re.compile(r"/(api|v\d+|graphql|rest|gql|rpc)/", re.IGNORECASE)
+
+
+def _categorise_urls(urls: list) -> dict:
+    """Bucket a list of URL strings into categories."""
+    cats = {
+        "params": [],
+        "admin_sensitive": [],
+        "interesting_ext": [],
+        "api_endpoints": [],
+        "other": [],
+    }
+    seen = set()
+    for url in urls:
+        url = url.strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        if _PARAM_URL_RE.search(url):
+            cats["params"].append(url)
+        if _SENSITIVE_PATH_RE.search(url):
+            cats["admin_sensitive"].append(url)
+        if _INTERESTING_EXT_RE.search(url):
+            cats["interesting_ext"].append(url)
+        if _API_PATH_RE.search(url):
+            cats["api_endpoints"].append(url)
+        if not any([
+            _PARAM_URL_RE.search(url),
+            _SENSITIVE_PATH_RE.search(url),
+            _INTERESTING_EXT_RE.search(url),
+            _API_PATH_RE.search(url),
+        ]):
+            cats["other"].append(url)
+    return cats
+
+
+def _scan_url_for_secrets(url: str) -> list:
+    """Check if a URL itself leaks secrets in query params."""
+    found = []
+    patterns = [
+        ("JWT in URL", re.compile(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")),
+        ("AWS key in URL", re.compile(r"AKIA[0-9A-Z]{16}")),
+        ("Generic API key", re.compile(r"[aA][pP][iI][_\-]?[kK][eE][yY][=:][0-9A-Za-z]{16,}")),
+        ("Google API key", re.compile(r"AIza[0-9A-Za-z\-_]{35}")),
+    ]
+    for label, pat in patterns:
+        if pat.search(url):
+            found.append({"type": label, "url": url})
+    return found
+
+
+# ---------------------------------------------------------------------------
+# Secret scanning patterns (used by cmd_secrets)
+# ---------------------------------------------------------------------------
+
+SECRET_PATTERNS = [
+    ("AWS Access Key", re.compile(r"AKIA[0-9A-Z]{16}")),
+    ("AWS Secret Key", re.compile(r"(?i)aws.{0,20}secret.{0,20}['\"][0-9A-Za-z/+]{40}['\"]")),
+    ("Google API Key", re.compile(r"AIza[0-9A-Za-z\-_]{35}")),
+    ("Generic API Key", re.compile(r"(?i)['\"]?api[_\-]?key['\"]?\s*[=:]\s*['\"][0-9A-Za-z\-_]{20,}['\"]")),
+    ("JWT Token", re.compile(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")),
+    ("Password in code", re.compile(r"(?i)password\s*[=:]\s*['\"][^'\"]{6,}['\"]")),
+    ("Firebase URL", re.compile(r"https?://[a-zA-Z0-9\-]+\.firebaseio\.com")),
+    ("Private key header", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+    ("MongoDB URI", re.compile(r"mongodb(\+srv)?://[^\s'\"]+")),
+    ("SMTP creds", re.compile(r"(?i)smtp.{0,30}password\s*[=:]\s*['\"][^'\"]{4,}['\"]")),
+    ("Slack token", re.compile(r"xox[baprs]-[0-9A-Za-z\-]{10,}")),
+    ("GitHub token", re.compile(r"gh[pousr]_[A-Za-z0-9]{36,}")),
+    ("Bearer token", re.compile(r"(?i)bearer\s+[A-Za-z0-9\-_=]{20,}")),
+    ("Basic auth in URL", re.compile(r"https?://[^:@\s]+:[^:@\s]+@")),
+    ("Hardcoded secret", re.compile(r"(?i)(secret|token|auth)[_\-]?[kK]ey\s*[=:]\s*['\"][A-Za-z0-9\-_]{16,}['\"]")),
+]
+
+EXPOSED_FILE_PATHS = [
+    "/.env",
+    "/.env.local",
+    "/.env.production",
+    "/.env.development",
+    "/.git/config",
+    "/.git/HEAD",
+    "/backup.zip",
+    "/backup.sql",
+    "/db.sql",
+    "/database.sql",
+    "/dump.sql",
+    "/config.php",
+    "/config.bak",
+    "/wp-config.php.bak",
+    "/.htpasswd",
+    "/web.config.bak",
+    "/application.properties",
+    "/application.yml",
+    "/settings.py",
+]
+
+
+def _http_get(url: str, timeout: int = 10) -> tuple:
+    """
+    Fetch URL content.  Returns (status_code: int, text: str, headers: dict).
+    Uses requests if available, else curl subprocess.
+    """
+    if HAS_REQUESTS:
+        try:
+            resp = requests.get(url, timeout=timeout, allow_redirects=True,
+                                headers={"User-Agent": "Mozilla/5.0 (HAKUZA/2.0)"})
+            return resp.status_code, resp.text, dict(resp.headers)
+        except Exception as exc:
+            return 0, str(exc), {}
+    else:
+        stdout, stderr, rc = _run_tool(
+            ["curl", "-sk", "-w", "\n%{http_code}", "-L", "--max-time", str(timeout), url],
+            timeout=timeout + 5,
+        )
+        lines = stdout.rsplit("\n", 1)
+        body = lines[0] if len(lines) > 1 else stdout
+        try:
+            status = int(lines[-1].strip()) if len(lines) > 1 else 0
+        except ValueError:
+            status = 0
+        return status, body, {}
+
+
+def _fetch_js_urls(base_url: str, console) -> list:
+    """
+    Fetch the HTML of base_url and extract all script src URLs.
+    Returns list of absolute JS URLs.
+    """
+    Panel, Rule, Table, Markdown, Prompt, Confirm, Progress, SpinnerColumn, TextColumn, box = _rich()
+    status, body, _ = _http_get(base_url)
+    if status == 0 or not body:
+        console.print(f"  [yellow]Could not fetch {base_url}[/yellow]")
+        return []
+    from urllib.parse import urljoin, urlparse
+    parsed_base = urlparse(base_url)
+    base = f"{parsed_base.scheme}://{parsed_base.netloc}"
+    js_urls = []
+    for match in re.finditer(r'<script[^>]+src=["\']([^"\']+)["\']', body, re.IGNORECASE):
+        src = match.group(1)
+        if src.startswith("http"):
+            js_urls.append(src)
+        elif src.startswith("//"):
+            js_urls.append(f"{parsed_base.scheme}:{src}")
+        else:
+            js_urls.append(urljoin(base_url, src))
+    console.print(f"  [dim]Found {len(js_urls)} script tags in {base_url}[/dim]")
+    return js_urls
+
+
+def _scan_text_for_secrets(text: str, source: str = "") -> list:
+    """Scan arbitrary text content with SECRET_PATTERNS. Returns list of hit dicts."""
+    hits = []
+    for label, pat in SECRET_PATTERNS:
+        for m in pat.finditer(text):
+            snippet = m.group(0)
+            if len(snippet) > 120:
+                snippet = snippet[:120] + "..."
+            hits.append({
+                "type": label,
+                "snippet": snippet,
+                "source": source,
+                "line": text.count("\n", 0, m.start()) + 1,
+            })
+    return hits
+
+
+# ---------------------------------------------------------------------------
+# cmd_wayback
+# ---------------------------------------------------------------------------
+
+def cmd_wayback(args, console) -> None:
+    """
+    hakuza wayback [--domain <override>] [--filter endpoints|params|secrets|all] [--save]
+
+    Mine historical URLs for attack surface via waybackurls / gau / katana + AI analysis.
+    """
+    Panel, Rule, Table, Markdown, Prompt, Confirm, Progress, SpinnerColumn, TextColumn, box = _rich()
+    eng = _require_engagement(console)
+
+    target = getattr(args, "domain", None) or eng["target"]
+    domain = _extract_domain(target)
+    url_filter = getattr(args, "filter", "all") or "all"
+    save_flag = getattr(args, "save", False)
+
+    eng_dir = _n("ENGAGEMENTS_DIR") / eng["name"]
+    recon_dir = eng_dir / "recon"
+    recon_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+
+    console.print(
+        Panel(
+            f"[bold]Domain:[/bold]  {domain}\n"
+            f"[bold]Filter:[/bold]  {url_filter}\n"
+            f"[bold]Save:[/bold]    {'yes' if save_flag else 'no'}",
+            title="[bold cyan]  HAKUZA Wayback — Historical URL Mining[/bold cyan]",
+            border_style="cyan",
+            expand=False,
+        )
+    )
+
+    all_urls: list = []
+
+    # --- 1. waybackurls ---
+    if shutil.which("waybackurls"):
+        console.print("[cyan]  Running waybackurls...[/cyan]")
+        stdout, _, rc = _run_tool(["waybackurls", domain], timeout=120)
+        if stdout:
+            wb_urls = [u.strip() for u in stdout.splitlines() if u.strip().startswith("http")]
+            console.print(f"  [green]waybackurls: {len(wb_urls)} URLs[/green]")
+            all_urls.extend(wb_urls)
+    elif shutil.which("gau"):
+        console.print("[cyan]  waybackurls not found — trying gau...[/cyan]")
+        stdout, _, rc = _run_tool(["gau", domain], timeout=120)
+        if stdout:
+            gau_urls = [u.strip() for u in stdout.splitlines() if u.strip().startswith("http")]
+            console.print(f"  [green]gau: {len(gau_urls)} URLs[/green]")
+            all_urls.extend(gau_urls)
+    else:
+        console.print("[yellow]  Neither waybackurls nor gau installed — using AI URL prediction.[/yellow]")
+        client_ai = _get_client_or_none()
+        if client_ai:
+            predicted_raw = _ask(
+                client_ai,
+                f"Predict 40 historically common URL patterns for the domain '{domain}'. "
+                f"Focus on: API endpoints, admin paths, backup files, authentication URLs, "
+                f"common CMS paths, configuration endpoints. Return only absolute URLs "
+                f"(https://{domain}/...), one per line, no explanations.",
+                max_tokens=800,
+            )
+            predicted = [u.strip() for u in predicted_raw.splitlines() if u.strip().startswith("http")]
+            console.print(f"  [green]AI-predicted: {len(predicted)} URLs[/green]")
+            all_urls.extend(predicted)
+
+    # --- 2. katana JS crawl ---
+    if shutil.which("katana"):
+        console.print("[cyan]  Running katana (JS-aware crawl, depth=3)...[/cyan]")
+        stdout, _, rc = _run_tool(
+            ["katana", "-u", target, "-depth", "3", "-jc", "-silent", "-nc"],
+            timeout=180,
+        )
+        if stdout:
+            katana_urls = [u.strip() for u in stdout.splitlines() if u.strip().startswith("http")]
+            console.print(f"  [green]katana: {len(katana_urls)} URLs[/green]")
+            all_urls.extend(katana_urls)
+    else:
+        console.print("  [dim]katana not installed — skipping JS crawl[/dim]")
+
+    if not all_urls:
+        console.print("[yellow]No URLs collected.[/yellow]")
+        return
+
+    # De-duplicate
+    all_urls = list(dict.fromkeys(all_urls))
+    console.print(f"\n[bold]Total unique URLs:[/bold] {len(all_urls)}")
+
+    # --- 3. Categorise ---
+    cats = _categorise_urls(all_urls)
+
+    # --- 4. Secret scanning in URLs ---
+    url_secrets = []
+    for url in all_urls:
+        url_secrets.extend(_scan_url_for_secrets(url))
+
+    # --- 5. Display results ---
+    console.print()
+    console.print(Rule("[bold]URL Categories[/bold]", style="dim"))
+
+    category_map = {
+        "params": ("URLs with Parameters", "yellow"),
+        "admin_sensitive": ("Admin / Sensitive Paths", "red"),
+        "interesting_ext": ("Interesting File Extensions", "orange3"),
+        "api_endpoints": ("API Endpoints", "cyan"),
+    }
+
+    if url_filter == "all":
+        show_cats = list(category_map.keys())
+    elif url_filter == "endpoints":
+        show_cats = ["admin_sensitive", "api_endpoints"]
+    elif url_filter == "params":
+        show_cats = ["params"]
+    elif url_filter == "secrets":
+        show_cats = []  # only show URL secrets below
+    else:
+        show_cats = list(category_map.keys())
+
+    for cat_key in show_cats:
+        items = cats.get(cat_key, [])
+        label, color = category_map[cat_key]
+        if not items:
+            continue
+        tbl = Table(
+            title=f"[{color}]{label} ({len(items)})[/{color}]",
+            box=box.SIMPLE,
+            show_header=False,
+            expand=False,
+        )
+        tbl.add_column("URL", overflow="fold", max_width=120)
+        for u in items[:30]:
+            tbl.add_row(u)
+        if len(items) > 30:
+            tbl.add_row(f"[dim]... and {len(items)-30} more[/dim]")
+        console.print(tbl)
+
+    if url_secrets:
+        console.print()
+        console.print(Rule("[bold red]Secrets Found in URLs[/bold red]", style="red"))
+        for s in url_secrets[:20]:
+            console.print(f"  [red]{s['type']}[/red]  {s['url'][:120]}")
+
+    # --- 6. Save to DB ---
+    interesting_urls = (
+        cats["params"] + cats["admin_sensitive"] +
+        cats["interesting_ext"] + cats["api_endpoints"]
+    )
+    if interesting_urls:
+        _add_recon(eng["id"], "wayback_urls", "\n".join(interesting_urls[:500]), "wayback")
+        console.print(f"\n[green]Saved {len(interesting_urls[:500])} interesting URLs to engagement DB.[/green]")
+
+    if url_secrets:
+        for s in url_secrets:
+            _add_recon(eng["id"], "url_secret", json.dumps(s), "wayback_secret_scan")
+
+    # Save to file if requested
+    if save_flag:
+        save_path = recon_dir / f"{domain}_wayback_{timestamp}.txt"
+        save_path.write_text("\n".join(all_urls), encoding="utf-8")
+        console.print(f"[green]All URLs saved to:[/green] {save_path}")
+
+    # --- 7. AI analysis ---
+    console.print()
+    console.print(Rule("[bold cyan]AI Attack Surface Analysis[/bold cyan]", style="dim cyan"))
+    client_ai = _get_client_or_none()
+    if not client_ai:
+        console.print("[dim]Set ANTHROPIC_API_KEY to enable AI analysis.[/dim]")
+    else:
+        sample_interesting = interesting_urls[:60]
+        ai_prompt = (
+            f"Given these historical/crawled URLs from '{domain}' (BFSI target):\n\n"
+            + "\n".join(f"  {u}" for u in sample_interesting)
+            + f"\n\nAlso found {len(url_secrets)} secrets in URLs.\n\n"
+            f"Identify:\n"
+            f"1. The 5 most valuable attack targets and why\n"
+            f"2. Any parameter patterns suggesting SQLi, IDOR, or SSRF\n"
+            f"3. Endpoints likely to have authentication bypasses\n"
+            f"4. Recommended manual testing order\n"
+            f"5. Any BFSI-specific sensitive patterns\n"
+            f"Be specific and actionable."
+        )
+        _stream(client_ai, [{"role": "user", "content": ai_prompt}], 800, console)
+
+    console.print()
+    console.print(
+        Panel(
+            f"[bold green]Wayback mining complete![/bold green]\n\n"
+            f"Total URLs: {len(all_urls)}  |  "
+            f"With params: {len(cats['params'])}  |  "
+            f"Admin/sensitive: {len(cats['admin_sensitive'])}  |  "
+            f"API endpoints: {len(cats['api_endpoints'])}\n"
+            f"Secrets in URLs: {len(url_secrets)}",
+            title="[bold]Wayback Summary[/bold]",
+            border_style="green",
+            expand=False,
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+# cmd_secrets
+# ---------------------------------------------------------------------------
+
+def cmd_secrets(args, console) -> None:
+    """
+    hakuza secrets [--url <target>] [--js-only] [--deep]
+
+    Hunt for exposed secrets: JS files, git exposure, env files, backup files.
+    """
+    Panel, Rule, Table, Markdown, Prompt, Confirm, Progress, SpinnerColumn, TextColumn, box = _rich()
+    eng = _require_engagement(console)
+
+    target = getattr(args, "url", None) or eng["target"]
+    js_only = getattr(args, "js_only", False)
+    deep = getattr(args, "deep", False)
+
+    from urllib.parse import urlparse
+    parsed = urlparse(target if target.startswith("http") else f"https://{target}")
+    base_url = f"{parsed.scheme}://{parsed.netloc}"
+
+    console.print(
+        Panel(
+            f"[bold]Target:[/bold]  {base_url}\n"
+            f"[bold]Mode:[/bold]    {'JS files only' if js_only else 'Full secret scan'}"
+            f"{'  +  Deep' if deep else ''}",
+            title="[bold cyan]  HAKUZA Secrets Hunter[/bold cyan]",
+            border_style="cyan",
+            expand=False,
+        )
+    )
+
+    all_findings = []
+
+    # --- 1. JS file scanning ---
+    console.print()
+    console.print(Rule("[bold]JavaScript File Analysis[/bold]", style="dim"))
+    js_urls = _fetch_js_urls(base_url, console)
+    if deep:
+        # Also try common JS paths
+        common_js = [
+            f"{base_url}/app.js", f"{base_url}/main.js", f"{base_url}/bundle.js",
+            f"{base_url}/static/js/main.chunk.js", f"{base_url}/assets/index.js",
+            f"{base_url}/js/app.js", f"{base_url}/dist/bundle.js",
+        ]
+        js_urls = list(dict.fromkeys(js_urls + common_js))
+
+    for js_url in js_urls[:25]:
+        status, body, _ = _http_get(js_url, timeout=8)
+        if status == 200 and body:
+            hits = _scan_text_for_secrets(body, js_url)
+            if hits:
+                console.print(f"  [red]SECRETS in {js_url[:80]}:[/red]")
+                for h in hits[:5]:
+                    console.print(f"    [{h['type']}] line {h['line']}: {h['snippet'][:80]}")
+                all_findings.extend(hits)
+            else:
+                console.print(f"  [green]Clean:[/green] {js_url[:80]}")
+
+    if not js_only:
+        # --- 2. Exposed files check ---
+        console.print()
+        console.print(Rule("[bold]Exposed File Check[/bold]", style="dim"))
+        check_paths = EXPOSED_FILE_PATHS[:]
+        if deep:
+            check_paths += [
+                "/config/database.yml", "/config/secrets.yml",
+                "/.aws/credentials", "/docker-compose.yml",
+                "/Dockerfile", "/.travis.yml", "/circle.yml",
+            ]
+
+        exposed_tbl = Table(box=box.SIMPLE, show_header=True, header_style="bold")
+        exposed_tbl.add_column("Path", style="yellow")
+        exposed_tbl.add_column("Status", width=8)
+        exposed_tbl.add_column("Finding", style="red")
+
+        exposed_count = 0
+        for fpath in check_paths:
+            full_url = base_url.rstrip("/") + fpath
+            status, body, headers = _http_get(full_url, timeout=6)
+            if status == 200 and body and len(body) > 10:
+                hits = _scan_text_for_secrets(body, full_url)
+                finding_summary = f"{len(hits)} secret(s)" if hits else "Content exposed"
+                exposed_tbl.add_row(fpath, f"[red]{status}[/red]", finding_summary)
+                exposed_count += 1
+                all_findings.extend(hits)
+                # Add as a proper finding
+                _add_finding(
+                    eng["id"],
+                    title=f"Exposed Sensitive File: {fpath}",
+                    severity="high" if hits else "medium",
+                    url=full_url,
+                    description=f"Sensitive file {fpath} is publicly accessible at {full_url}. "
+                                f"Content length: {len(body)} bytes.",
+                    evidence=body[:500],
+                    impact="Exposed configuration, credentials, or source code could allow full system compromise.",
+                    remediation=f"Restrict access to {fpath} via server configuration. "
+                                f"Add to .gitignore and rotate any exposed credentials immediately.",
+                    tool="hakuza-secrets",
+                )
+                _add_recon(eng["id"], "exposed_file", full_url, "secrets-scan")
+            elif status == 200:
+                exposed_tbl.add_row(fpath, "[yellow]200[/yellow]", "Empty/minimal response")
+            # Skip non-200 silently (expected)
+
+        if exposed_count:
+            console.print(exposed_tbl)
+        else:
+            console.print("  [green]No exposed sensitive files found.[/green]")
+
+        # --- 3. Git exposure ---
+        console.print()
+        console.print(Rule("[bold].git Exposure Check[/bold]", style="dim"))
+        git_status, git_body, _ = _http_get(f"{base_url}/.git/config", timeout=6)
+        if git_status == 200 and "[core]" in (git_body or ""):
+            console.print(f"  [bold red]CRITICAL: .git/config exposed at {base_url}/.git/config[/bold red]")
+            console.print(f"  [dim]{git_body[:200]}[/dim]")
+            _add_finding(
+                eng["id"],
+                title=".git Repository Exposed",
+                severity="critical",
+                url=f"{base_url}/.git/config",
+                description="The .git directory is publicly accessible. An attacker can reconstruct "
+                            "the entire source code including secrets, credentials, and history.",
+                evidence=git_body[:500],
+                cvss_score=9.8,
+                cvss_vector="AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+                cwe="CWE-538",
+                impact="Full source code disclosure, credential exposure, potential RCE via source analysis.",
+                remediation="Block access to /.git/ in web server config. "
+                            "Use 'git filter-branch' or BFG to purge secrets from history.",
+                tool="hakuza-secrets",
+            )
+            _add_recon(eng["id"], "git_exposed", f"{base_url}/.git/config", "secrets-scan")
+        else:
+            console.print(f"  [green].git/config not exposed (HTTP {git_status})[/green]")
+
+    # --- 4. Deduplicate and display all findings ---
+    if all_findings:
+        console.print()
+        console.print(Rule(f"[bold red]Total Secrets Found: {len(all_findings)}[/bold red]", style="red"))
+        tbl = Table(box=box.ROUNDED, show_header=True, header_style="bold red", expand=False)
+        tbl.add_column("Type", style="red", width=22)
+        tbl.add_column("Source", overflow="ellipsis", max_width=55)
+        tbl.add_column("Line", width=6, justify="right")
+        tbl.add_column("Snippet", overflow="fold", max_width=55)
+        for h in all_findings[:40]:
+            tbl.add_row(
+                h["type"],
+                h.get("source", "")[:55],
+                str(h.get("line", "-")),
+                h.get("snippet", "")[:55],
+            )
+        console.print(tbl)
+
+        # Save to DB
+        _add_recon(eng["id"], "secrets", json.dumps(all_findings[:100]), "hakuza-secrets")
+
+        # Add consolidated finding
+        if len(all_findings) > 0:
+            _add_finding(
+                eng["id"],
+                title=f"Secrets Exposed in JavaScript/Files ({len(all_findings)} hits)",
+                severity="high",
+                url=base_url,
+                description=f"Secret scanning found {len(all_findings)} potential secrets across "
+                            f"JavaScript files and exposed configuration files at {base_url}.",
+                evidence="\n".join(
+                    f"[{h['type']}] {h.get('source','')} L{h.get('line','')} — {h.get('snippet','')[:80]}"
+                    for h in all_findings[:20]
+                ),
+                impact="Exposed secrets may allow direct account compromise, infrastructure access, "
+                       "or lateral movement across systems.",
+                remediation="Remove secrets from client-side JS. Use server-side environment variables. "
+                            "Rotate all exposed credentials immediately. Implement pre-commit secret scanning.",
+                cwe="CWE-312",
+                tool="hakuza-secrets",
+            )
+    else:
+        console.print()
+        console.print("[green]No secrets found.[/green]")
+
+    console.print()
+    console.print(
+        Panel(
+            f"[bold]{'Secrets found: ' + str(len(all_findings)) if all_findings else 'No secrets detected'}[/bold]\n"
+            f"JS files scanned: {len(js_urls)}\n"
+            f"Exposed paths checked: {len(EXPOSED_FILE_PATHS)}\n"
+            f"[dim]Findings saved to engagement DB.[/dim]",
+            title="[bold]Secrets Scan Complete[/bold]",
+            border_style="green" if not all_findings else "red",
+            expand=False,
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+# cmd_fuzz
+# ---------------------------------------------------------------------------
+
+_TECH_WORDLISTS = {
+    "spring":  ["/actuator", "/actuator/health", "/actuator/env", "/actuator/beans",
+                "/actuator/mappings", "/v3/api-docs", "/swagger-ui.html"],
+    "php":     ["/wp-admin/", "/wp-login.php", "/admin.php", "/config.php",
+                "/phpinfo.php", "/phpmyadmin/", "/adminer.php"],
+    "node":    ["/node_modules/", "/.npmrc", "/package.json", "/npm-debug.log"],
+    "django":  ["/admin/", "/api/", "/static/", "/media/", "/__debug__/"],
+    "laravel": ["/telescope", "/horizon", "/.env", "/storage/logs/laravel.log"],
 }
 
-# END mod_mobile_cloud.py
+_DEFAULT_DIRS = [
+    "admin", "api", "login", "dashboard", "config", "backup", "test",
+    "dev", "staging", "upload", "uploads", "files", "static", "assets",
+    "v1", "v2", "graphql", "docs", "swagger", "metrics", "health",
+    ".env", ".git", "robots.txt", "sitemap.xml",
+]
+
+_DEFAULT_PARAMS = [
+    "id", "user", "file", "path", "url", "redirect", "next", "page",
+    "search", "query", "cmd", "exec", "lang", "format", "type", "token",
+]
+
+_DEFAULT_API = [
+    "users", "user", "accounts", "account", "profile", "settings", "admin",
+    "auth", "login", "logout", "register", "token", "refresh", "reset",
+    "password", "upload", "files", "data", "export", "import", "webhook",
+]
+
+
+def _detect_tech(target_url: str, console) -> str:
+    """Detect technology stack from HTTP headers and body. Returns tech label."""
+    status, body, headers = _http_get(target_url, timeout=8)
+    if status == 0:
+        return "generic"
+
+    headers_str = json.dumps({k.lower(): v for k, v in headers.items()})
+    body_lower = (body or "").lower()[:3000]
+    all_text = headers_str + body_lower
+
+    if "x-powered-by" in headers_str and "spring" in headers_str:
+        return "spring"
+    if "laravel" in all_text or "laravel_session" in all_text:
+        return "laravel"
+    if "django" in all_text or "csrfmiddlewaretoken" in all_text:
+        return "django"
+    if "x-powered-by: php" in headers_str.lower() or "<?php" in body_lower:
+        return "php"
+    if "node" in headers_str or "express" in headers_str:
+        return "node"
+    if "actuator" in body_lower or "spring" in body_lower:
+        return "spring"
+    return "generic"
+
+
+def _parse_ffuf_json(output: str) -> list:
+    """Parse ffuf -json output. Returns list of result dicts."""
+    results = []
+    try:
+        data = json.loads(output)
+        for item in data.get("results", []):
+            results.append({
+                "url": item.get("url", ""),
+                "status": item.get("status", 0),
+                "length": item.get("length", 0),
+                "words": item.get("words", 0),
+                "lines": item.get("lines", 0),
+                "redirect": item.get("redirectlocation", ""),
+            })
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return results
+
+
+def cmd_fuzz(args, console) -> None:
+    """
+    hakuza fuzz [--url <target>] [--mode dirs|params|api|vhosts] [--wordlist <file>] [--threads 50]
+
+    Smart fuzzing with tech detection, wordlist selection, and AI analysis.
+    """
+    Panel, Rule, Table, Markdown, Prompt, Confirm, Progress, SpinnerColumn, TextColumn, box = _rich()
+    eng = _require_engagement(console)
+
+    target = getattr(args, "url", None) or eng["target"]
+    mode = getattr(args, "mode", "dirs") or "dirs"
+    custom_wordlist = getattr(args, "wordlist", None)
+    threads = getattr(args, "threads", 50)
+
+    if not target.startswith("http"):
+        target = f"https://{target}"
+
+    domain = _extract_domain(target)
+
+    console.print(
+        Panel(
+            f"[bold]Target:[/bold]  {target}\n"
+            f"[bold]Mode:[/bold]    {mode}\n"
+            f"[bold]Threads:[/bold] {threads}",
+            title="[bold cyan]  HAKUZA Smart Fuzzer[/bold cyan]",
+            border_style="cyan",
+            expand=False,
+        )
+    )
+
+    # Detect tech
+    with _n("Progress")(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+        transient=True,
+    ) as prog:
+        t = prog.add_task("Detecting technology stack...", total=None)
+        tech = _detect_tech(target, console)
+        prog.update(t, completed=True)
+
+    console.print(f"  [cyan]Detected tech:[/cyan] {tech}")
+
+    # Build wordlist
+    if custom_wordlist and Path(custom_wordlist).exists():
+        wordlist_items = Path(custom_wordlist).read_text().splitlines()
+        wl_source = custom_wordlist
+    else:
+        # Combine default + tech-specific
+        if mode == "dirs":
+            wordlist_items = _DEFAULT_DIRS + _TECH_WORDLISTS.get(tech, [])
+        elif mode == "params":
+            wordlist_items = _DEFAULT_PARAMS
+        elif mode == "api":
+            wordlist_items = _DEFAULT_API + _TECH_WORDLISTS.get(tech, [])
+        else:
+            wordlist_items = _DEFAULT_DIRS
+
+        # Also check system wordlists
+        system_wls = [
+            "/usr/share/seclists/Discovery/Web-Content/common.txt",
+            "/usr/share/wordlists/dirb/common.txt",
+            Path.home() / "wordlists" / "admin-paths.txt",
+        ]
+        wl_source = "built-in"
+        for swl in system_wls:
+            if Path(swl).exists():
+                extra = [l.strip() for l in Path(swl).read_text().splitlines()
+                         if l.strip() and not l.startswith("#")]
+                wordlist_items = list(dict.fromkeys(wordlist_items + extra[:500]))
+                wl_source = str(swl)
+                break
+
+    console.print(f"  [dim]Wordlist: {len(wordlist_items)} entries from {wl_source}[/dim]")
+
+    # Write temp wordlist
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as tmp:
+        tmp.write("\n".join(wordlist_items))
+        tmp_wl = tmp.name
+
+    results = []
+    ffuf_available = shutil.which("ffuf")
+
+    if ffuf_available:
+        # Build ffuf command based on mode
+        import tempfile as tf
+        out_file = tf.NamedTemporaryFile(suffix=".json", delete=False).name
+
+        if mode == "dirs":
+            fuzz_url = target.rstrip("/") + "/FUZZ"
+            cmd = ["ffuf", "-u", fuzz_url, "-w", tmp_wl, "-mc", "200,201,204,301,302,403",
+                   "-t", str(threads), "-json", "-o", out_file, "-s"]
+        elif mode == "params":
+            fuzz_url = target + "?FUZZ=test"
+            cmd = ["ffuf", "-u", fuzz_url, "-w", tmp_wl, "-mc", "200",
+                   "-t", str(threads), "-json", "-o", out_file, "-s"]
+        elif mode == "api":
+            fuzz_url = target.rstrip("/") + "/FUZZ"
+            cmd = ["ffuf", "-u", fuzz_url, "-w", tmp_wl, "-mc", "200,201,204",
+                   "-t", str(threads), "-json", "-o", out_file, "-s"]
+        elif mode == "vhosts":
+            cmd = ["ffuf", "-u", target, "-H", f"Host: FUZZ.{domain}",
+                   "-w", tmp_wl, "-mc", "200,301,302",
+                   "-t", str(threads), "-json", "-o", out_file, "-s"]
+        else:
+            fuzz_url = target.rstrip("/") + "/FUZZ"
+            cmd = ["ffuf", "-u", fuzz_url, "-w", tmp_wl, "-mc", "200,301,302,403",
+                   "-t", str(threads), "-json", "-o", out_file, "-s"]
+
+        console.print(f"\n[cyan]Running:[/cyan] {_n('_rich_escape')(' '.join(cmd[:6]))} ...")
+        stdout, stderr, rc = _run_tool(cmd, timeout=300)
+
+        if Path(out_file).exists():
+            raw = Path(out_file).read_text()
+            results = _parse_ffuf_json(raw)
+            Path(out_file).unlink(missing_ok=True)
+
+        console.print(f"  [green]ffuf: {len(results)} results[/green]")
+    else:
+        # Manual check without ffuf
+        console.print("[yellow]ffuf not installed — running basic manual check...[/yellow]")
+        for word in wordlist_items[:50]:
+            check_url = target.rstrip("/") + "/" + word.lstrip("/")
+            status, body, _ = _http_get(check_url, timeout=5)
+            if status in (200, 201, 204, 301, 302, 403):
+                results.append({"url": check_url, "status": status, "length": len(body or "")})
+
+        console.print(f"  [green]Manual check: {len(results)} responses[/green]")
+
+    Path(tmp_wl).unlink(missing_ok=True)
+
+    # Display results
+    if results:
+        console.print()
+        tbl = Table(
+            title=f"Fuzz Results — {mode.upper()} mode ({len(results)} hits)",
+            box=box.ROUNDED,
+            show_header=True,
+            header_style="bold cyan",
+        )
+        tbl.add_column("URL", overflow="fold", max_width=80)
+        tbl.add_column("Status", width=8, justify="center")
+        tbl.add_column("Length", width=10, justify="right")
+        tbl.add_column("Redirect", overflow="fold", max_width=40)
+
+        status_color = {200: "green", 201: "green", 204: "green",
+                        301: "yellow", 302: "yellow", 403: "orange3"}
+        for r in results[:50]:
+            sc = r.get("status", 0)
+            color = status_color.get(sc, "white")
+            tbl.add_row(
+                r.get("url", "")[:80],
+                f"[{color}]{sc}[/{color}]",
+                str(r.get("length", "")),
+                (r.get("redirect") or "")[:40],
+            )
+        console.print(tbl)
+
+        # Save interesting hits
+        interesting = [r for r in results if r.get("status") in (200, 201, 204)]
+        if interesting:
+            _add_recon(
+                eng["id"],
+                "fuzz_hits",
+                "\n".join(f"{r['status']} {r['url']}" for r in interesting),
+                f"ffuf-{mode}",
+            )
+
+        # AI analysis
+        console.print()
+        console.print(Rule("[bold cyan]AI Result Analysis[/bold cyan]", style="dim cyan"))
+        client_ai = _get_client_or_none()
+        if client_ai:
+            results_text = "\n".join(
+                f"  {r['status']} {r['url']} (len={r.get('length',0)})"
+                for r in results[:30]
+            )
+            ai_prompt = (
+                f"These paths were discovered on {target} (tech: {tech}) via {mode} fuzzing:\n\n"
+                f"{results_text}\n\n"
+                f"Which of these look most interesting for further testing? "
+                f"Focus on: admin panels, API endpoints, backup files, debug interfaces. "
+                f"Suggest next manual testing steps for the top 3. Be specific."
+            )
+            _stream(client_ai, [{"role": "user", "content": ai_prompt}], 600, console)
+    else:
+        console.print("[yellow]No results found.[/yellow]")
+
+    console.print()
+    console.print(
+        Panel(
+            f"[bold]Mode:[/bold] {mode}  |  [bold]Tech:[/bold] {tech}  |  "
+            f"[bold]Results:[/bold] {len(results)}\n"
+            f"[dim]Run with --mode api or --mode vhosts for additional coverage.[/dim]",
+            title="[bold]Fuzz Complete[/bold]",
+            border_style="green",
+            expand=False,
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+# cmd_scope
+# ---------------------------------------------------------------------------
+
+def _load_scope(eng: dict) -> list:
+    scope_file = _n("ENGAGEMENTS_DIR") / eng["name"] / "scope.txt"
+    if not scope_file.exists():
+        return []
+    return [l.strip() for l in scope_file.read_text().splitlines() if l.strip() and not l.startswith("#")]
+
+
+def _save_scope(eng: dict, entries: list) -> None:
+    scope_file = _n("ENGAGEMENTS_DIR") / eng["name"] / "scope.txt"
+    scope_file.parent.mkdir(parents=True, exist_ok=True)
+    scope_file.write_text("\n".join(entries) + "\n", encoding="utf-8")
+
+
+def _url_in_scope(url: str, scope_entries: list) -> bool:
+    """Check if url matches any scope entry (glob wildcard / domain / substring match)."""
+    url_lower = url.lower()
+    for entry in scope_entries:
+        entry_lower = entry.lower().strip()
+        if not entry_lower:
+            continue
+        # Wildcard domain: *.example.com
+        if entry_lower.startswith("*.") and "/" not in entry_lower:
+            base = entry_lower[2:]
+            if url_lower.endswith(base) or f".{base}" in url_lower:
+                return True
+        # Any other glob pattern, e.g. https://example.com/*, https://example.com/api/*
+        elif "*" in entry_lower or "?" in entry_lower:
+            if fnmatch.fnmatch(url_lower, entry_lower):
+                return True
+            # Entry without a trailing wildcard segment still implies "and below"
+            if not entry_lower.endswith("*") and fnmatch.fnmatch(url_lower, entry_lower + "*"):
+                return True
+        elif entry_lower in url_lower:
+            return True
+        elif url_lower in entry_lower:
+            return True
+    return False
+
+
+def cmd_scope(args, console) -> None:
+    """
+    hakuza scope [--add <url>] [--check <url>] [--list] [--from-file <file>]
+
+    Manage engagement scope — add, check, and list in-scope targets.
+    """
+    Panel, Rule, Table, Markdown, Prompt, Confirm, Progress, SpinnerColumn, TextColumn, box = _rich()
+    eng = _require_engagement(console)
+
+    add_url = getattr(args, "add", None)
+    check_url = getattr(args, "check", None)
+    list_flag = getattr(args, "list", False)
+    from_file = getattr(args, "from_file", None)
+
+    scope_file = _n("ENGAGEMENTS_DIR") / eng["name"] / "scope.txt"
+    scope_entries = _load_scope(eng)
+
+    # Default to --list if no action given
+    if not any([add_url, check_url, from_file]) or list_flag:
+        if not scope_entries:
+            console.print("[yellow]No scope entries. Add with:[/yellow] hakuza scope --add <url>")
+            console.print(f"[dim]Scope file:[/dim] {scope_file}")
+        else:
+            tbl = Table(
+                title=f"Scope — {eng['name']} ({len(scope_entries)} entries)",
+                box=box.ROUNDED,
+                show_header=True,
+                header_style="bold cyan",
+            )
+            tbl.add_column("#", width=4, justify="right")
+            tbl.add_column("Entry")
+            for i, entry in enumerate(scope_entries, 1):
+                tbl.add_row(str(i), entry)
+            console.print(tbl)
+            console.print(f"[dim]Scope file: {scope_file}[/dim]")
+
+    if add_url:
+        if add_url not in scope_entries:
+            scope_entries.append(add_url)
+            _save_scope(eng, scope_entries)
+            console.print(f"[green]Added to scope:[/green] {add_url}")
+            _add_recon(eng["id"], "scope", add_url, "manual")
+        else:
+            console.print(f"[yellow]Already in scope:[/yellow] {add_url}")
+
+    if from_file:
+        fp = Path(from_file)
+        if not fp.exists():
+            console.print(f"[red]File not found:[/red] {from_file}")
+        else:
+            new_entries = [l.strip() for l in fp.read_text().splitlines()
+                           if l.strip() and not l.startswith("#")]
+            added = 0
+            for entry in new_entries:
+                if entry not in scope_entries:
+                    scope_entries.append(entry)
+                    added += 1
+            _save_scope(eng, scope_entries)
+            console.print(f"[green]Imported {added} new scope entries from {fp.name}.[/green]")
+
+    if check_url:
+        if not scope_entries:
+            console.print(f"[yellow]No scope defined — cannot check.[/yellow]")
+            console.print("[yellow]Add scope entries first:[/yellow] hakuza scope --add <url>")
+        elif _url_in_scope(check_url, scope_entries):
+            console.print(
+                Panel(
+                    f"[bold green]IN SCOPE[/bold green]\n{check_url}\n\n"
+                    f"Matched against {len(scope_entries)} scope entries.",
+                    title="Scope Check",
+                    border_style="green",
+                    expand=False,
+                )
+            )
+        else:
+            console.print(
+                Panel(
+                    f"[bold red]OUT OF SCOPE[/bold red]\n{check_url}\n\n"
+                    f"[yellow]WARNING: Do NOT test this target without authorization.[/yellow]",
+                    title="Scope Check",
+                    border_style="red",
+                    expand=False,
+                )
+            )
+
+
+# ---------------------------------------------------------------------------
+# cmd_config  (enhanced replacement)
+# ---------------------------------------------------------------------------
+
+def cmd_config(args, console) -> None:
+    """
+    hakuza config [--show] [--set key=value] [--init]
+
+    Improved config command with Rich table display, interactive setup wizard.
+    """
+    Panel, Rule, Table, Markdown, Prompt, Confirm, Progress, SpinnerColumn, TextColumn, box = _rich()
+
+    show = getattr(args, "show", False)
+    set_val = getattr(args, "set", None)
+    init_flag = getattr(args, "init", False)
+
+    cfg = _n("load_config")()
+    defaults = _n("_DEFAULT_CONFIG")
+
+    if init_flag:
+        console.print(
+            Panel(
+                "[bold]Welcome to HAKUZA Setup[/bold]\n"
+                "Let's configure your environment. Press Enter to keep current value.",
+                title="[bold cyan]  HAKUZA Configuration Wizard[/bold cyan]",
+                border_style="cyan",
+                expand=False,
+            )
+        )
+        fields = [
+            ("tester_name", "Your name (shown in reports)", "Divith D Shetty"),
+            ("api_key", "Anthropic API key (sk-ant-...)", ""),
+            ("proxy", "Burp proxy (e.g. http://127.0.0.1:8080)", ""),
+            ("output_dir", "Output directory for engagements", str(_n("ENGAGEMENTS_DIR"))),
+        ]
+        for key, label, fallback in fields:
+            current = cfg.get(key, fallback)
+            if key == "api_key" and current:
+                display_current = current[:4] + "..." + current[-4:]
+            else:
+                display_current = current or "(not set)"
+            val = Prompt.ask(f"[bold]{label}[/bold]", default=current or fallback)
+            cfg[key] = val
+        _n("save_config")(cfg)
+        console.print("[green]Configuration saved.[/green]")
+        show = True  # fall through to display
+
+    if set_val:
+        if "=" not in set_val:
+            console.print("[red]Usage:[/red] hakuza config --set key=value")
+            return
+        key, _, val = set_val.partition("=")
+        key, val = key.strip(), val.strip()
+        cfg[key] = val
+        _n("save_config")(cfg)
+        console.print(f"[green]Set[/green] [bold]{key}[/bold] = {val if 'key' not in key.lower() else val[:4]+'...'}")
+        return
+
+    # Default / --show: pretty table
+    tbl = Table(
+        title="HAKUZA Configuration",
+        box=box.ROUNDED,
+        show_header=True,
+        header_style="bold cyan",
+        expand=False,
+    )
+    tbl.add_column("Key", style="bold white", width=20)
+    tbl.add_column("Value", width=38)
+    tbl.add_column("Status", width=10)
+
+    for key in sorted(set(list(defaults.keys()) + list(cfg.keys()))):
+        raw_val = cfg.get(key, "")
+        is_default = raw_val == defaults.get(key, "") or not raw_val
+
+        # Mask sensitive values
+        if "key" in key.lower() and raw_val and len(raw_val) > 8:
+            display_val = raw_val[:7] + "***" + raw_val[-4:]
+        else:
+            display_val = str(raw_val) if raw_val else "[dim](not set)[/dim]"
+
+        if raw_val and not is_default:
+            status = "[bold green]set[/bold green]"
+        elif raw_val and is_default:
+            status = "[dim]default[/dim]"
+        else:
+            status = "[dim]· default[/dim]"
+
+        tbl.add_row(key, display_val, status)
+
+    console.print(tbl)
+    console.print(f"\n[dim]Config file: {_n('CONFIG_PATH')}[/dim]")
+    console.print("[dim]Edit with: [bold]hakuza config --set key=value[/bold] or [bold]hakuza config --init[/bold][/dim]")
+
+
+# ---------------------------------------------------------------------------
+# cmd_wizard  —  interactive guided demo wizard
+# ---------------------------------------------------------------------------
+
+_WIZARD_STEPS = [
+    ("Create Engagement", "Set up a new pentest engagement with client and target details."),
+    ("Run Quick Recon", "Enumerate subdomains, live hosts, and open ports."),
+    ("Scan for Vulnerabilities", "Run automated vulnerability scanning with nuclei."),
+    ("AI Analysis", "Use Claude to analyse findings and suggest attack chains."),
+    ("Add Manual Finding", "Record a manually discovered vulnerability."),
+    ("Generate Report", "Produce a professional penetration testing report."),
+]
+
+
+def _wizard_step_header(step_num: int, title: str, desc: str, console) -> None:
+    Panel, *_ = _rich()
+    console.print()
+    console.print(
+        Panel(
+            f"[bold]{desc}[/bold]",
+            title=f"[bold cyan]Step {step_num}/{len(_WIZARD_STEPS)}: {title}[/bold cyan]",
+            border_style="cyan",
+            expand=False,
+        )
+    )
+
+
+def cmd_wizard(args, console) -> None:
+    """
+    hakuza wizard
+
+    Interactive guided walkthrough — create engagement, recon, scan, analyse,
+    add finding, generate report. Ideal for live demos and onboarding.
+    """
+    Panel, Rule, Table, Markdown, Prompt, Confirm, Progress, SpinnerColumn, TextColumn, box = _rich()
+
+    console.print(
+        Panel(
+            "[bold cyan]HAKUZA Engagement Wizard[/bold cyan]\n\n"
+            "Let's walk through a complete pentest engagement from start to first finding.\n"
+            "Each step explains what we're doing and why — perfect for demos.\n\n"
+            "[dim]Press Ctrl+C at any time to exit.[/dim]",
+            title="[bold]Welcome to HAKUZA[/bold]",
+            border_style="cyan",
+            expand=False,
+        )
+    )
+
+    steps_display = Table(box=box.SIMPLE, show_header=False, expand=False)
+    steps_display.add_column("Step", style="bold cyan", width=8)
+    steps_display.add_column("Title", style="bold")
+    for i, (title, _) in enumerate(_WIZARD_STEPS, 1):
+        steps_display.add_row(f"  {i}/{len(_WIZARD_STEPS)}", title)
+    console.print(steps_display)
+    console.print()
+
+    if not Confirm.ask("[bold]Start the wizard?[/bold]", default=True):
+        console.print("[yellow]Wizard cancelled.[/yellow]")
+        return
+
+    # ---- Step 1: Create engagement ----
+    _wizard_step_header(1, "Create Engagement",
+                        "We create a named engagement that tracks all findings, recon data, "
+                        "and artifacts. Everything in HAKUZA lives inside an engagement.", console)
+
+    eng_name = Prompt.ask("[bold]Engagement name[/bold] (e.g. acme-web-2026)",
+                          default="wizard-demo")
+    client_name = Prompt.ask("[bold]Client name[/bold]", default="Acme Bank")
+    target_url = Prompt.ask("[bold]Target URL[/bold]", default="https://demo.acme.com")
+
+    # Check if engagement already exists
+    existing = _n("get_engagement")(eng_name)
+    if not existing:
+        eng = _n("create_engagement")(eng_name, client_name, target_url, target_url, "web",
+                                      _n("get_config_value")("tester_name", "Divith D Shetty"))
+        _n("set_current_engagement")(eng_name)
+        eng_dir = _n("ENGAGEMENTS_DIR") / eng_name
+        for sub in ["evidence", "reports", "recon", "artifacts"]:
+            (eng_dir / sub).mkdir(parents=True, exist_ok=True)
+        console.print(f"\n[green]Engagement '[bold]{eng_name}[/bold]' created and set as active.[/green]")
+    else:
+        eng = existing
+        _n("set_current_engagement")(eng_name)
+        console.print(f"\n[yellow]Engagement '[bold]{eng_name}[/bold]' already exists — switched to it.[/yellow]")
+
+    console.print(f"  [dim]Client: {eng['client']}  Target: {eng['target']}  Type: web[/dim]")
+
+    if not Confirm.ask("\n[bold]Continue to Step 2?[/bold]", default=True):
+        console.print("[yellow]Wizard paused. Resume with:[/yellow] hakuza wizard")
+        return
+
+    # ---- Step 2: Quick Recon ----
+    _wizard_step_header(2, "Run Quick Recon",
+                        "Recon maps the attack surface: subdomains, live hosts, open ports. "
+                        "The more we know about the target, the better we can prioritise.", console)
+
+    domain = _extract_domain(target_url)
+    console.print(f"[cyan]Running recon on:[/cyan] {domain}")
+
+    tools = _check_tools()
+
+    with _n("Progress")(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+        transient=True,
+    ) as prog:
+        if tools.get("subfinder"):
+            t = prog.add_task("Running subfinder...", total=None)
+            stdout, _, _ = _run_tool(["subfinder", "-d", domain, "-silent"], timeout=60)
+            subs = [s.strip() for s in stdout.splitlines() if s.strip()][:10]
+            prog.update(t, completed=True)
+        else:
+            subs = [f"api.{domain}", f"app.{domain}", f"admin.{domain}", f"mobile.{domain}"]
+            console.print(f"  [dim]subfinder not installed — using predicted subdomains[/dim]")
+
+    for s in subs[:5]:
+        console.print(f"  [cyan]  {s}[/cyan]")
+    if subs:
+        _add_recon(eng["id"], "subdomains", "\n".join(subs), "wizard-recon")
+        console.print(f"  [green]Found {len(subs)} subdomains — saved to DB[/green]")
+
+    console.print()
+    console.print(f"  [dim]In a full test we'd now run httpx for live probing and nmap for port scanning.[/dim]")
+    console.print(f"  [dim]Run 'hakuza recon' for the full recon workflow.[/dim]")
+
+    if not Confirm.ask("\n[bold]Continue to Step 3?[/bold]", default=True):
+        console.print("[yellow]Wizard paused.[/yellow]")
+        return
+
+    # ---- Step 3: Scan ----
+    _wizard_step_header(3, "Scan for Vulnerabilities",
+                        "We run automated scanners to find low-hanging fruit quickly. "
+                        "nuclei uses community templates for CVEs, misconfigs, and exposures.", console)
+
+    if tools.get("nuclei"):
+        console.print(f"[cyan]Would run:[/cyan] nuclei -u {target_url} -tags cves,misconfigurations -json")
+        console.print("[dim]  (skipping live scan in wizard mode — run 'hakuza scan' for real scan)[/dim]")
+    else:
+        console.print("[yellow]nuclei not installed.[/yellow]")
+        console.print(f"[dim]Install: go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest[/dim]")
+        console.print()
+        console.print("[dim]For demo purposes, adding a simulated finding...[/dim]")
+
+    # Simulate a finding for demo purposes
+    sim_finding = _add_finding(
+        eng["id"],
+        title="[DEMO] Security Headers Missing",
+        severity="medium",
+        url=target_url,
+        description="Multiple security headers are absent: X-Frame-Options, X-Content-Type-Options, "
+                    "Content-Security-Policy. This is a common misconfiguration.",
+        evidence="HTTP/1.1 200 OK\nContent-Type: text/html\n[No security headers present]",
+        cvss_score=5.3,
+        cvss_vector="AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N",
+        cwe="CWE-693",
+        impact="Missing headers enable clickjacking, MIME sniffing, and XSS amplification.",
+        remediation="Add: X-Frame-Options: DENY, X-Content-Type-Options: nosniff, "
+                    "Content-Security-Policy: default-src 'self'",
+        tool="wizard-demo",
+    )
+    console.print(f"  [green]Simulated finding added: [{sim_finding['short_id']}] {sim_finding['title'][:60]}[/green]")
+
+    if not Confirm.ask("\n[bold]Continue to Step 4?[/bold]", default=True):
+        return
+
+    # ---- Step 4: AI Analysis ----
+    _wizard_step_header(4, "AI Analysis",
+                        "Claude analyses all findings, identifies attack chains, and suggests "
+                        "what to test next — saving hours of manual triage.", console)
+
+    client_ai = _get_client_or_none()
+    if client_ai:
+        findings = _n("list_findings")(eng["id"])
+        ftext = _n("findings_to_summary_text")(findings)
+        ai_prompt = (
+            f"Brief analysis for a pentest demo engagement:\n"
+            f"Target: {target_url}\nClient: {client_name}\n\n"
+            f"Findings:\n{ftext}\n\n"
+            f"Provide a 3-point triage: top risk, likely next finding, recommended immediate action."
+        )
+        console.print("[cyan]Asking Claude...[/cyan]\n")
+        _stream(client_ai, [{"role": "user", "content": ai_prompt}], 400, console)
+    else:
+        console.print("[dim]AI analysis requires ANTHROPIC_API_KEY.[/dim]")
+        console.print("[dim]Set it with: hakuza config --set api_key=sk-ant-...[/dim]")
+        console.print("\n[bold]What AI would say:[/bold]")
+        console.print("  1. [bold red]Top risk:[/bold red] Missing security headers enable clickjacking on login page")
+        console.print("  2. [bold orange3]Next target:[/bold orange3] Test for CSRF — same headers missing suggests weak defence posture")
+        console.print("  3. [bold green]Immediate action:[/bold green] Run 'hakuza secrets' to check for exposed .env files")
+
+    if not Confirm.ask("\n[bold]Continue to Step 5?[/bold]", default=True):
+        return
+
+    # ---- Step 5: Add Manual Finding ----
+    _wizard_step_header(5, "Add Manual Finding",
+                        "Automated tools miss business logic flaws and complex vulnerabilities. "
+                        "Manual findings are the difference between a 9.5 and a generic scan report.", console)
+
+    console.print("[dim]Let's add a manual finding to demonstrate the workflow.[/dim]")
+    console.print()
+
+    add_title = Prompt.ask("[bold]Finding title[/bold]", default="Insecure Direct Object Reference on /api/accounts/{id}")
+    add_sev = Prompt.ask("[bold]Severity[/bold]", choices=["critical", "high", "medium", "low"], default="high")
+    add_url_val = Prompt.ask("[bold]Affected URL[/bold]", default=f"{target_url}/api/accounts/1234")
+
+    manual_f = _add_finding(
+        eng["id"],
+        title=add_title,
+        severity=add_sev,
+        url=add_url_val,
+        description=f"Changing the account ID in {add_url_val} returns another user's account data. "
+                    f"No authorisation check is performed server-side.",
+        evidence=f"GET {add_url_val.replace('1234','9999')}\n"
+                 f"HTTP/1.1 200 OK\n"
+                 f"{{\"id\": 9999, \"name\": \"Jane Doe\", \"balance\": 42000}}",
+        cvss_score=7.5,
+        cvss_vector="AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N",
+        cwe="CWE-639",
+        owasp="API3:2023 Broken Object Property Level Authorization",
+        impact="Attacker can access any customer's account data by iterating account IDs.",
+        remediation="Implement server-side authorisation checks on every object access. "
+                    "Validate that the requesting user owns the requested resource.",
+        tool="manual",
+    )
+
+    console.print(f"\n[green]Finding added:[/green] [{manual_f['short_id']}] {manual_f['title'][:70]}")
+    console.print(f"  [dim]Severity: {add_sev.upper()}  CVSS: {manual_f.get('cvss_score')}[/dim]")
+
+    if not Confirm.ask("\n[bold]Continue to Step 6?[/bold]", default=True):
+        return
+
+    # ---- Step 6: Report ----
+    _wizard_step_header(6, "Generate Report",
+                        "HAKUZA generates a full professional report with executive summary, "
+                        "technical findings, CVSS scores, and remediation roadmap.", console)
+
+    findings = _n("list_findings")(eng["id"])
+    counts = _n("get_finding_count")(eng["id"])
+
+    console.print(f"  [bold]Findings in engagement:[/bold]")
+    for sev in ["critical", "high", "medium", "low", "informational"]:
+        cnt = counts.get(sev, 0)
+        if cnt:
+            color = {"critical": "red", "high": "orange3", "medium": "yellow",
+                     "low": "green", "informational": "blue"}.get(sev, "white")
+            console.print(f"    [{color}]{sev.upper()}: {cnt}[/{color}]")
+
+    console.print()
+    console.print(f"[dim]To generate the full report, run:[/dim]")
+    console.print(f"[bold cyan]  hakuza report --html --output {eng_name}_report.md[/bold cyan]")
+    console.print()
+    console.print(
+        "[dim]The report includes: Executive Summary, Risk Matrix, Full Findings Detail, "
+        "Attack Chains, Remediation Timeline, and Regulatory Impact (PCI-DSS, RBI, SEBI).[/dim]"
+    )
+
+    # Final summary
+    console.print()
+    console.print(
+        Panel(
+            f"[bold green]Wizard complete![/bold green]\n\n"
+            f"Engagement [bold]{eng_name}[/bold] is set up and ready.\n"
+            f"  {sum(counts.values())} finding(s) recorded\n"
+            f"  {len(subs)} subdomains discovered\n\n"
+            f"[bold]Next steps:[/bold]\n"
+            f"  hakuza recon           — Full recon (subfinder + httpx + nmap)\n"
+            f"  hakuza scan            — Nuclei vulnerability scan\n"
+            f"  hakuza secrets         — Hunt for exposed secrets\n"
+            f"  hakuza wayback         — Mine historical URLs\n"
+            f"  hakuza fuzz            — Smart directory/API fuzzing\n"
+            f"  hakuza analyze --save  — Deep AI analysis\n"
+            f"  hakuza report --html   — Generate final report",
+            title="[bold]Wizard Complete[/bold]",
+            border_style="green",
+            expand=False,
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# MODULE: mod_techniques.py
+# ──────────────────────────────────────────────────────────────────────────
+
+"""
+HAKUZA Techniques Module — Load and manage ATT&CK technique library
+Provides technique lookup, filtering, and orchestration hints
+"""
+
+from typing import Optional, List, Dict, Any
+
+TECHNIQUES_FILE = Path(__file__).parent / "techniques.yaml"
+
+_techniques_cache: Optional[List[Dict[str, Any]]] = None
+
+
+def load_techniques() -> List[Dict[str, Any]]:
+    """Load techniques from techniques.yaml and cache in memory."""
+    global _techniques_cache
+
+    if _techniques_cache is not None:
+        return _techniques_cache
+
+    if not TECHNIQUES_FILE.exists():
+        console.print(f"[yellow]Warning: {TECHNIQUES_FILE} not found[/yellow]")
+        return []
+
+    with open(TECHNIQUES_FILE, 'r') as f:
+        data = yaml.safe_load(f)
+
+    _techniques_cache = data.get("techniques", [])
+    return _techniques_cache
+
+
+def get_technique_by_id(technique_id: str) -> Optional[Dict[str, Any]]:
+    """Fetch a single technique by its id."""
+    techniques = load_techniques()
+    for t in techniques:
+        if t.get("id") == technique_id:
+            return t
+    return None
+
+
+def find_techniques_by_tags(tags: List[str]) -> List[Dict[str, Any]]:
+    """Find techniques matching ANY of the given tags (applicability_tags)."""
+    techniques = load_techniques()
+    results = []
+    for t in techniques:
+        t_tags = t.get("applicability_tags", [])
+        if any(tag in t_tags for tag in tags):
+            results.append(t)
+    return results
+
+
+def find_techniques_by_severity(severity: str) -> List[Dict[str, Any]]:
+    """Find techniques matching severity level."""
+    techniques = load_techniques()
+    return [t for t in techniques if t.get("severity") == severity]
+
+
+def get_technique_summary(technique: Dict[str, Any]) -> str:
+    """Return a one-line summary for display."""
+    return f"{technique.get('id'):25} {technique.get('name'):40} [{technique.get('severity', 'unknown').upper():8}]"
+
+
+def cmd_list_techniques(args) -> None:
+    """List all loaded techniques with optional filtering."""
+    techniques = load_techniques()
+
+    if not techniques:
+        console.print("[red]No techniques loaded[/red]")
+        return
+
+    # Filter by tags if provided
+    if args.tag:
+        techniques = find_techniques_by_tags(args.tag.split(","))
+
+    # Filter by severity if provided
+    if args.severity:
+        techniques = find_techniques_by_severity(args.severity.lower())
+
+    console.print(f"\n[bold cyan]Loaded Techniques ({len(techniques)})[/bold cyan]")
+    console.print("─" * 100)
+    console.print(f"{'Technique ID':<25} {'Name':<40} {'Severity':<10}")
+    console.print("─" * 100)
+
+    for t in techniques:
+        severity_color = SEV_COLORS.get(t.get("severity", "info"), "blue")
+        severity_badge = f"[{severity_color}]{t.get('severity', 'info').upper()}[/{severity_color}]"
+        console.print(
+            f"{t.get('id', 'unknown'):<25} "
+            f"{t.get('name', 'unknown'):<40} "
+            f"{severity_badge}"
+        )
+
+    console.print()
+
+
+def cmd_show_technique(args) -> None:
+    """Display detailed information about a specific technique."""
+    technique = get_technique_by_id(args.technique_id)
+
+    if not technique:
+        console.print(f"[red]Technique '{args.technique_id}' not found[/red]")
+        return
+
+    console.print()
+    console.print(f"[bold cyan]{technique.get('name')}[/bold cyan]")
+    console.print(f"[dim]ID: {technique.get('id')}[/dim]")
+    console.print()
+
+    console.print(f"[bold]Description:[/bold]")
+    console.print(f"  {technique.get('description', 'N/A')}")
+    console.print()
+
+    console.print(f"[bold]MITRE ATT&CK:[/bold]")
+    for tid in technique.get("mitre", []):
+        console.print(f"  • {tid}")
+    console.print()
+
+    console.print(f"[bold]Applicability Tags:[/bold]")
+    tags = technique.get("applicability_tags", [])
+    console.print(f"  {', '.join(tags) if tags else 'N/A'}")
+    console.print()
+
+    console.print(f"[bold]Prerequisites:[/bold]")
+    reqs = technique.get("prerequisites", [])
+    for req in reqs:
+        console.print(f"  • {req}")
+    console.print()
+
+    console.print(f"[bold]Procedure:[/bold]")
+    console.print(f"  {technique.get('procedure', 'N/A')}")
+    console.print()
+
+    console.print(f"[bold]Expected Artifacts:[/bold]")
+    artifacts = technique.get("expected_artifacts", [])
+    for art in artifacts:
+        console.print(f"  • {art}")
+    console.print()
+
+    severity_color = SEV_COLORS.get(technique.get("severity", "info"), "blue")
+    console.print(f"[bold]Severity:[/bold] [{severity_color}]{technique.get('severity', 'unknown').upper()}[/{severity_color}]")
+    console.print()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# MODULE: mod_poc_discovery.py
+# ──────────────────────────────────────────────────────────────────────────
+
+"""
+HAKUZA PoC Discovery Module — Auto-discover exploits for CVEs
+Searches GitHub for public PoC code and links to known vulnerabilities
+"""
+
+
+# GitHub Search API (free tier, no auth required)
+# Rate limit: 10 req/min unauthenticated
+GITHUB_SEARCH_URL = "https://api.github.com/search/repositories"
+
+
+def search_github_poc(cve_id: str, limit: int = 3) -> List[Dict[str, str]]:
+    """
+    Search GitHub for public PoC repositories matching a CVE ID.
+
+    Returns list of {url, stars, language, description}
+    """
+    results = []
+
+    # Query: "CVE-XXXX" in code with Python/Bash/Shell preference
+    query = f'"{cve_id}" in:description,readme language:python OR language:shell OR language:bash'
+
+    try:
+        # Use curl to avoid adding requests dependency
+        cmd = [
+            "curl",
+            "-s",
+            "-H", "Accept: application/vnd.github.v3+json",
+            f"{GITHUB_SEARCH_URL}?q={query}&sort=stars&order=desc&per_page={limit}",
+        ]
+
+        output = subprocess.run(cmd, capture_output=True, text=True, timeout=10).stdout
+        data = json.loads(output)
+
+        if "items" not in data:
+            return []
+
+        for repo in data["items"][:limit]:
+            results.append({
+                "url": repo.get("html_url", ""),
+                "name": repo.get("name", ""),
+                "stars": repo.get("stargazers_count", 0),
+                "language": repo.get("language", "Unknown"),
+                "description": repo.get("description", ""),
+                "last_updated": repo.get("updated_at", ""),
+            })
+
+    except Exception as e:
+        # Silently fail — network issue or rate limit
+        pass
+
+    return results
+
+
+def extract_poc_links(cve_id: str) -> List[str]:
+    """
+    Extract direct PoC/exploit links from known public sources.
+    Primarily from GitHub via search + fallback to known registries.
+    """
+    links = []
+
+    # GitHub search results
+    github_pocs = search_github_poc(cve_id, limit=3)
+    for poc in github_pocs:
+        links.append({
+            "source": "GitHub",
+            "url": poc["url"],
+            "metadata": f"{poc['language']} • {poc['stars']} stars",
+            "title": poc.get("description", poc["name"]),
+        })
+
+    # NVD reference links (parse from CVE if available)
+    # This would ideally query NVD, but that requires more context
+    # For now, we just return what we found
+
+    return links
+
+
+def cmd_poc_discover(args) -> None:
+    """Discover PoC code for a given CVE."""
+    cve_id = args.cve_id.upper()
+
+    # Validate CVE format
+    if not re.match(r"^CVE-\d{4}-\d{4,}$", cve_id):
+        console.print(f"[red]Invalid CVE format: {cve_id}[/red]")
+        console.print("[dim]Expected format: CVE-YYYY-NUMBER[/dim]")
+        return
+
+    console.print(f"\n[bold cyan]Searching for PoC: {cve_id}[/bold cyan]")
+    console.print("[dim]Querying GitHub repositories...[/dim]")
+
+    pocs = extract_poc_links(cve_id)
+
+    if not pocs:
+        console.print(f"[yellow]No public PoC found for {cve_id}[/yellow]")
+        console.print("[dim]Try searching manually on GitHub or ExploitDB[/dim]")
+        return
+
+    console.print(f"\n[bold]Found {len(pocs)} PoC(s):[/bold]\n")
+
+    for i, poc in enumerate(pocs, 1):
+        console.print(f"[bold]{i}. {poc.get('title', 'Unknown')}[/bold]")
+        console.print(f"   Source: {poc['source']}")
+        console.print(f"   URL: {poc['url']}")
+        if poc.get('metadata'):
+            console.print(f"   Metadata: {poc['metadata']}")
+        console.print()
+
+
+def enrich_finding_with_poc(finding_id: str, engagement_db, cve_id: str) -> bool:
+    """
+    Update a finding with auto-discovered PoC links.
+    Attach as finding.poc_links (JSON array)
+    """
+    if not cve_id:
+        return False
+
+    pocs = extract_poc_links(cve_id)
+    if not pocs:
+        return False
+
+    try:
+        conn = engagement_db
+        poc_json = json.dumps(pocs)
+
+        conn.execute(
+            "UPDATE findings SET poc_links = ? WHERE id = ?",
+            (poc_json, finding_id),
+        )
+        conn.commit()
+        return True
+
+    except Exception as e:
+        # Silently fail if DB update doesn't work
+        return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# MODULE: mod_orchestrate.py
+# ──────────────────────────────────────────────────────────────────────────
+
+"""
+HAKUZA Orchestration Module — ReAct-style autonomous agent loop
+Reads engagement state, decides next test, executes, repeats
+"""
+
+from typing import Optional, Dict, Any, List
+
+# Requires: mod_techniques to be loaded
+try:
+    from mod_technique_executors import execute_technique
+    HAS_EXECUTORS = True
+except ImportError:
+    HAS_EXECUTORS = False
+
+try:
+    from mod_techniques import load_techniques
+    HAS_TECHNIQUES = True
+except ImportError:
+    HAS_TECHNIQUES = False
+
+
+# Lazy-load hakuza module helpers
+def _n(attr):
+    """Fetch attribute from hakuza module at call-time."""
+    import importlib
+    hakuza = importlib.import_module("hakuza")
+    return getattr(hakuza, attr)
+
+
+# Global console and other required references
+console = None
+Confirm = None
+SYSTEM_PROMPT = """You are HAKUZA, an autonomous penetration testing orchestrator."""
+
+
+def _init_globals():
+    """Initialize global references from hakuza on first use."""
+    global console, Confirm, SYSTEM_PROMPT
+    if console is None:
+        try:
+            from rich.console import Console
+            from rich.prompt import Confirm as RichConfirm
+            console = Console()
+            Confirm = RichConfirm
+        except ImportError:
+            import sys
+            class SimpleConsole:
+                def print(self, msg):
+                    print(msg)
+            class SimpleConfirm:
+                @staticmethod
+                def ask(msg):
+                    return input(f"{msg} (y/n): ").lower().startswith('y')
+            console = SimpleConsole()
+            Confirm = SimpleConfirm
+    return console
+
+
+# Wrapper functions for hakuza module dependencies
+def get_engagement(name: str = None) -> Optional[Dict[str, Any]]:
+    """Wrapper for hakuza.get_engagement()."""
+    try:
+        return _n("get_engagement")(name)
+    except Exception:
+        return None
+
+
+def list_findings(engagement_id: str, severity_filter: str = None) -> List[Dict]:
+    """Wrapper for hakuza.list_findings()."""
+    try:
+        return _n("list_findings")(engagement_id, severity_filter)
+    except Exception:
+        return []
+
+
+def get_config_value(key: str) -> Optional[str]:
+    """Wrapper for hakuza.get_config_value()."""
+    try:
+        return _n("get_config_value")(key)
+    except Exception:
+        return None
+
+
+def build_orchestration_prompt(engagement: Dict[str, Any], findings: List[Dict[str, Any]],
+                               available_techniques: List[Dict[str, Any]]) -> str:
+    """Build a ReAct prompt for the orchestrator to decide the next action."""
+
+    findings_summary = ""
+    if findings:
+        findings_summary = "## Current Findings\n\n"
+        for f in findings[:5]:  # Last 5 findings
+            findings_summary += f"- [{f['severity'].upper()}] {f['title']}\n"
+            if f.get('cve'):
+                findings_summary += f"  CVE: {f['cve']}\n"
+        if len(findings) > 5:
+            findings_summary += f"... and {len(findings) - 5} more\n"
+
+    techniques_list = ""
+    for t in available_techniques[:10]:
+        techniques_list += f"- {t['id']}: {t['name']} ({t['severity']})\n"
+
+    prompt = f"""You are HAKUZA, an autonomous penetration testing agent operating in ReAct mode.
+
+ENGAGEMENT CONTEXT:
+- Target: {engagement.get('target', 'Unknown')}
+- Type: {engagement.get('type', 'web')}
+- Scope: {engagement.get('scope', 'Unknown')}
+- Start Date: {engagement.get('start_date', 'Unknown')}
+
+{findings_summary}
+
+AVAILABLE TECHNIQUES (sample):
+{techniques_list}
+
+TASK: Decide the NEXT penetration test to execute. Choose wisely — prioritize:
+1. High-severity vulnerabilities that haven't been tested yet
+2. Common web vulnerabilities on untested parameters
+3. Follow-up tests on discovered findings (e.g., if SSRF found, try cloud metadata)
+4. Coverage of all major attack vectors before deep dives
+
+RESPOND IN THIS EXACT JSON FORMAT (no markdown, no extra text):
+{{
+  "technique_id": "xss_reflected",
+  "target_url": "https://target.com/search?q=test",
+  "test_params": ["q", "sort"],
+  "rationale": "High-value target parameter has not been XSS-tested yet",
+  "expected_time_seconds": 30,
+  "approval_required": false
+}}
+
+If you believe testing is complete, respond:
+{{"status": "complete", "reason": "All major vectors tested"}}
+
+If you hit a blocker, respond:
+{{"status": "blocked", "reason": "Requires authentication that was not provided"}}
+"""
+
+    return prompt
+
+
+def run_orchestration_loop(engagement_name: str, depth: int = 5, max_iterations: int = 10) -> None:
+    """
+    Run autonomous orchestration loop: read state → plan → execute → repeat
+    """
+    global console
+    console = _init_globals()
+
+    engagement = get_engagement(engagement_name)
+    if not engagement:
+        console.print(f"[red]Engagement not found: {engagement_name}[/red]")
+        return
+
+    console.print(f"\n[bold cyan]Starting Orchestration Loop[/bold cyan]")
+    console.print(f"Target: {engagement['target']}")
+    console.print(f"Depth: {depth} | Max iterations: {max_iterations}")
+    console.print("─" * 80)
+
+    client = anthropic.Anthropic()
+
+    for iteration in range(max_iterations):
+        console.print(f"\n[bold]Iteration {iteration + 1}/{max_iterations}[/bold]")
+
+        # 1. Read current state
+        findings = list_findings(engagement["id"])
+        console.print(f"  Current findings: {len(findings)}")
+
+        # 2. Load available techniques
+        if HAS_TECHNIQUES:
+            techniques = load_techniques()
+        else:
+            techniques = []
+
+        if not techniques:
+            console.print("  [red]No techniques loaded. Aborting.[/red]")
+            break
+
+        # 3. Ask LLM for next action
+        prompt = build_orchestration_prompt(engagement, findings, techniques)
+
+        try:
+            message = client.messages.create(
+                model="claude-opus-4-1-20250805",
+                max_tokens=512,
+                system=SYSTEM_PROMPT,
+                messages=[
+                    {"role": "user", "content": prompt}
+                ],
+            )
+
+            response_text = message.content[0].text.strip()
+
+        except Exception as e:
+            console.print(f"[red]LLM error: {e}[/red]")
+            break
+
+        # 4. Parse response
+        try:
+            action = json.loads(response_text)
+        except json.JSONDecodeError:
+            console.print(f"[red]Invalid JSON response from LLM[/red]")
+            console.print(f"[dim]{response_text[:200]}[/dim]")
+            break
+
+        # 5. Check for terminal states
+        if action.get("status") == "complete":
+            console.print(f"\n[green]✓ Orchestration complete[/green]")
+            console.print(f"  Reason: {action.get('reason', 'N/A')}")
+            break
+
+        if action.get("status") == "blocked":
+            console.print(f"\n[yellow]✗ Orchestration blocked[/yellow]")
+            console.print(f"  Reason: {action.get('reason', 'N/A')}")
+            break
+
+        # 6. Display planned action
+        technique_id = action.get("technique_id")
+        target = action.get("target_url")
+        rationale = action.get("rationale", "")
+
+        console.print(f"  Technique: {technique_id}")
+        console.print(f"  Target: {target}")
+        console.print(f"  Rationale: {rationale}")
+
+        # 7. Ask for approval if needed
+        if action.get("approval_required"):
+            if not Confirm.ask("    Approve this action?"):
+                console.print("  [yellow]Action denied by user[/yellow]")
+                continue
+
+        # 8. Execute action using technique executors
+        console.print("[dim]Executing...[/dim]")
+
+        if HAS_EXECUTORS:
+            # Prepare executor parameters
+            test_params = action.get("test_params", [])
+            target_url = action.get("target_url")
+
+            # Execute the technique
+            finding = execute_technique(
+                technique_id=technique_id,
+                target_url=target_url,
+                params_list=test_params,
+                eng_id=engagement["id"]
+            )
+
+            if finding:
+                console.print(f"[green]✓ Vulnerability found: {finding.get('title', 'Unknown')}[/green]")
+            else:
+                console.print("[yellow]✓ Test executed - no vulnerability detected[/yellow]")
+        else:
+            console.print("[yellow]⚠ Executors not available - suggest manual testing[/yellow]")
+            console.print(f"  Target: {action.get('target_url')}")
+            console.print(f"  Technique: {technique_id}")
+            console.print(f"  Parameters: {', '.join(action.get('test_params', []))}")
+
+    console.print(f"\n[bold cyan]Orchestration Loop Complete[/bold cyan]")
+    console.print(f"Total findings: {len(list_findings(engagement['id']))}")
+
+
+def cmd_orchestrate(args) -> None:
+    """Run autonomous orchestration loop."""
+    engagement_name = args.engagement or get_config_value("current_engagement")
+
+    if not engagement_name:
+        console.print("[red]No engagement selected. Use 'hakuza switch' or 'hakuza orchestrate --engagement NAME'[/red]")
+        return
+
+    depth = args.depth or 5
+    max_iter = args.max_iterations or 10
+
+    run_orchestration_loop(engagement_name, depth=depth, max_iterations=max_iter)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 if __name__ == "__main__":

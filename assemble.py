@@ -143,6 +143,50 @@ def strip_hakuza_interfaces_import(code: str) -> str:
     return "".join(out)
 
 
+def strip_argparse_and_dispatch_sections(module_code: str) -> str:
+    """
+    Remove ARGPARSE ADDITIONS and DISPATCH ADDITIONS sections from module code.
+    These should only be extracted for injection, not included in the module body.
+
+    Strips everything from "# ARGPARSE ADDITIONS" or "# DISPATCH ADDITIONS"
+    through "# END modname.py".
+    """
+    lines = module_code.splitlines(keepends=True)
+    out = []
+    skip_mode = False  # True when we're inside a ADDITIONS block
+    block_type = None  # "argparse" or "dispatch"
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Check for ARGPARSE ADDITIONS marker
+        if re.search(r"#\s*ARGPARSE\s*ADDITIONS", stripped, re.IGNORECASE):
+            skip_mode = True
+            block_type = "argparse"
+            continue
+
+        # Check for DISPATCH ADDITIONS marker
+        if re.search(r"#\s*DISPATCH\s*(ADDITIONS?|ADDITION)", stripped, re.IGNORECASE):
+            skip_mode = True
+            block_type = "dispatch"
+            continue
+
+        # Check for END marker (e.g., "# END mod_ad_network.py")
+        # This ends both ARGPARSE and DISPATCH blocks
+        if skip_mode and re.search(r"#\s*END\s+\w+\.py", stripped):
+            skip_mode = False
+            block_type = None
+            continue
+
+        # Skip lines while in a block
+        if skip_mode:
+            continue
+
+        out.append(line)
+
+    return "".join(out)
+
+
 def strip_module_docstring(module_code: str, base_header_lines: set) -> str:
     """
     Remove a top-level module docstring whose first content line appears
@@ -331,23 +375,104 @@ def extract_dispatch_block(module_code: str) -> list:
     return result
 
 
+def extract_parser_commands(lines: list) -> set:
+    """
+    Extract the set of command names being defined in add_parser() calls.
+    E.g., extract_parser_commands(['p_ad = sub.add_parser("ad", ...)', ...])
+    returns {'ad', ...}
+    """
+    commands = set()
+    for ln in lines:
+        # Look for add_parser("cmd_name", ...)
+        m = re.search(r'add_parser\(["\']([^"\']+)["\']', ln)
+        if m:
+            commands.add(m.group(1))
+    return commands
+
+
+def already_has_parser(base_code: str, cmd_name: str) -> bool:
+    """Check if a parser for cmd_name is already defined in build_parser()."""
+    # Look for add_parser("cmd_name", ...) or add_parser('cmd_name', ...)
+    # This should match only active (non-commented) lines
+    pattern = re.compile(
+        r'^\s*(?:p_\w+\s*=\s*)?sub\.add_parser\(["\']' + re.escape(cmd_name) + r'["\']',
+        re.MULTILINE
+    )
+    return bool(pattern.search(base_code))
+
+
+def group_lines_by_parser(lines: list) -> dict:
+    """
+    Group argparse lines by which parser they belong to.
+    Returns: {cmd_name: [lines belonging to this parser], ...}
+    """
+    groups = {}
+    current_parser = None
+    current_lines = []
+
+    for ln in lines:
+        stripped = ln.strip()
+
+        # Detect start of a parser definition
+        m = re.search(r'add_parser\(["\']([^"\']+)["\']', ln)
+        if m and "p_" in ln:  # Should be like "p_ad = sub.add_parser(...)"
+            # Save previous parser group if any
+            if current_parser and current_lines:
+                groups[current_parser] = current_lines
+            # Start new parser group
+            current_parser = m.group(1)
+            current_lines = [ln]
+            continue
+
+        # Add line to current parser if we have one
+        if current_parser:
+            current_lines.append(ln)
+
+    # Save the last parser group
+    if current_parser and current_lines:
+        groups[current_parser] = current_lines
+
+    return groups
+
+
 def inject_argparse(base_code: str, new_lines: list) -> str:
-    """Insert *new_lines* before the 'return parser' line in build_parser()."""
+    """
+    Insert *new_lines* before the 'return parser' line in build_parser().
+    Automatically skips parser definitions that are already in the base code.
+    """
     if not new_lines:
         return base_code
 
-    # Find the indented 'return parser' line
+    # Group lines by parser to better detect duplicates
+    parser_groups = group_lines_by_parser(new_lines)
+
+    # Filter out parser definitions that already exist in base_code
+    filtered_lines = []
+    for cmd_name, cmd_lines in parser_groups.items():
+        if not already_has_parser(base_code, cmd_name):
+            filtered_lines.extend(cmd_lines)
+
+    if not filtered_lines:
+        # All lines were filtered out (all parsers already defined)
+        return base_code
+
+    # Find the indented 'return parser' line — ONLY match inside build_parser()
+    # We make the pattern more specific by requiring it to be inside the function
+    # (4-space indentation, and ensuring it's the actual return statement)
     pattern = re.compile(r"^( {4})return parser\s*$", re.MULTILINE)
-    m = pattern.search(base_code)
-    if not m:
+    matches = list(pattern.finditer(base_code))
+
+    if not matches:
         print(yellow("  [warn] Could not find 'return parser' — skipping argparse injection"))
         return base_code
 
+    # Use ONLY the first match
+    m = matches[0]
     insert_pos = m.start()
     base_indent = "    "   # 4-space indent inside build_parser()
 
     normalised = []
-    for ln in new_lines:
+    for ln in filtered_lines:
         # If the line has no indentation at all (starts at col 0), add base_indent
         if ln and not ln[0].isspace():
             normalised.append(base_indent + ln)
@@ -359,9 +484,52 @@ def inject_argparse(base_code: str, new_lines: list) -> str:
     return base_code[:insert_pos] + block + base_code[insert_pos:]
 
 
+def extract_dispatch_commands(lines: list) -> set:
+    """
+    Extract command names from dispatch entries.
+    E.g., ['"ad": cmd_ad,', ...] returns {'ad', ...}
+    """
+    commands = set()
+    for ln in lines:
+        # Look for "cmd_name": ... or 'cmd_name': ...
+        m = re.search(r'["\']([^"\']+)["\']\s*:\s*\w+', ln)
+        if m:
+            commands.add(m.group(1))
+    return commands
+
+
+def already_has_dispatch_entry(base_code: str, cmd_name: str) -> bool:
+    """Check if a command dispatch entry already exists in main()."""
+    # Look for "cmd_name": in the dispatch dict (non-commented)
+    pattern = re.compile(
+        r'["\']' + re.escape(cmd_name) + r'["\']\s*:\s*\w+',
+        re.MULTILINE
+    )
+    return bool(pattern.search(base_code))
+
+
 def inject_dispatch(base_code: str, new_lines: list) -> str:
-    """Insert *new_lines* before the closing '}' of the dispatch dict in main()."""
+    """
+    Insert *new_lines* before the closing '}' of the dispatch dict in main().
+    Automatically skips dispatch entries that are already in the base code.
+    """
     if not new_lines:
+        return base_code
+
+    # Filter out dispatch entries that already exist in base_code
+    filtered_lines = []
+    for ln in new_lines:
+        # Extract command name from this line (e.g., "mobile": cmd_mobile, -> "mobile")
+        m = re.search(r'["\']([^"\']+)["\']\s*:\s*\w+', ln)
+        if m:
+            cmd_name = m.group(1)
+            # Skip this line if the command already has a dispatch entry in base_code
+            if already_has_dispatch_entry(base_code, cmd_name):
+                continue
+        filtered_lines.append(ln)
+
+    if not filtered_lines:
+        # All lines were filtered out
         return base_code
 
     # Find the dispatch dict closing brace — it's on its own line with 4-space indent
@@ -378,7 +546,7 @@ def inject_dispatch(base_code: str, new_lines: list) -> str:
 
     # Insert before the closing brace
     closing_pos = m.start(2)
-    block = "\n".join(new_lines) + "\n"
+    block = "\n".join(filtered_lines) + "\n"
     return base_code[:closing_pos] + block + base_code[closing_pos:]
 
 
@@ -396,6 +564,36 @@ def already_has_definition(base_code: str, func_name: str) -> bool:
 # MAIN ASSEMBLER
 # ---------------------------------------------------------------------------
 
+def strip_existing_modules(base_code: str) -> str:
+    """
+    Remove any previously-appended module bodies from the base file.
+    This makes assembly idempotent - running it multiple times produces the same result.
+    """
+    lines = base_code.splitlines(keepends=True)
+    out = []
+    in_module = False
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Check for module marker (e.g., "# MODULE: mod_ad_network.py")
+        if re.search(r"#\s*MODULE\s*:\s*\w+\.py", stripped):
+            in_module = True
+            continue
+
+        # Check if we've exited the modules section (back to code that's not part of modules)
+        # Stop skipping when we hit the __main__ guard
+        if in_module and re.search(r'^if\s+__name__\s*==\s*["\']__main__["\']\s*:', stripped):
+            in_module = False
+
+        if in_module:
+            continue
+
+        out.append(line)
+
+    return "".join(out)
+
+
 def assemble():
     print()
     print(cyan(bold("  HAKUZA Assembler")))
@@ -412,6 +610,9 @@ def assemble():
     base_code = BASE.read_text(encoding="utf-8")
     base_lines = base_code.count("\n")
     print(f"  {blue('Base:')}  {BASE}  ({base_lines} lines)")
+
+    # Strip any previously-appended modules (make assembly idempotent)
+    base_code = strip_existing_modules(base_code)
 
     # Collect imports already in base
     base_imports = extract_imports(base_code)
@@ -446,6 +647,7 @@ def assemble():
         mod_code = strip_hakuza_interfaces_import(mod_code)
         mod_code = strip_duplicate_imports(mod_code, base_imports)
         mod_code = strip_module_docstring(mod_code, base_header_lines)
+        mod_code = strip_argparse_and_dispatch_sections(mod_code)
 
         # Update base_imports so subsequent modules also skip these
         base_imports.update(extract_imports(mod_raw))
