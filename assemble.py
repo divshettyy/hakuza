@@ -41,6 +41,9 @@ MODULES = [
     "mod_report.py",
     "mod_mobile_cloud.py",
     "mod_recon_plus.py",
+    "mod_techniques.py",
+    "mod_poc_discovery.py",
+    "mod_orchestrate.py",
 ]
 
 # Expected new commands per module (for the summary line).
@@ -54,6 +57,11 @@ MODULE_META = {
     "mod_mobile_cloud.py":  ("+4 commands: mobile, ios, cloud, iot",["mobile", "ios", "cloud", "iot"]),
     "mod_recon_plus.py":    ("+5 commands: wayback, secrets, fuzz, wizard, scope",
                                                                      ["wayback", "secrets", "fuzz", "wizard", "scope"]),
+    "mod_techniques.py":    ("+2 commands: list-techniques, show-technique",
+                                                                     ["list-techniques", "show-technique"]),
+    "mod_poc_discovery.py": ("+1 command: poc-discover",            ["poc-discover"]),
+    "mod_orchestrate.py":   ("+1 command: orchestrate (autonomous agent)",
+                                                                     ["orchestrate"]),
 }
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,348 @@
+# HAKUZA ATT&CK Technique Library
+# Reference implementation for autonomous orchestration
+# Each technique maps to MITRE ATT&CK T-IDs and includes procedural steps
+
+techniques:
+  # Web Application Vulnerabilities (T1190 - Exploit Public-Facing Application)
+
+  - id: xss_reflected
+    name: "Reflected Cross-Site Scripting (XSS)"
+    mitre: ["T1190", "T1204.001"]
+    description: "Inject malicious JavaScript into URL parameters that reflect in response"
+    applicability_tags: [web, webapp, api]
+    prerequisites: [target_url, parameter_list]
+    procedure: "Test URL parameters for unsanitized HTML/JS reflection using payload library"
+    expected_artifacts: [curl_command, poc_url, source_snippet]
+    severity: high
+
+  - id: xss_stored
+    name: "Stored Cross-Site Scripting (XSS)"
+    mitre: ["T1190"]
+    description: "Inject malicious JavaScript into database fields that render on page load"
+    applicability_tags: [web, webapp, forms, comment_sections]
+    prerequisites: [target_url, input_fields]
+    procedure: "Test form inputs for HTML/JS persistence; verify payload executes on page reload"
+    expected_artifacts: [curl_command, poc_url, source_snippet]
+    severity: high
+
+  - id: xss_dom
+    name: "DOM-based Cross-Site Scripting (XSS)"
+    mitre: ["T1190"]
+    description: "Exploit insecure DOM manipulation via JavaScript that reads attacker-controlled data"
+    applicability_tags: [web, webapp, javascript]
+    prerequisites: [target_url, client_side_code]
+    procedure: "Analyze JS source for DOM sinks (innerHTML, eval); craft payload targeting source→sink"
+    expected_artifacts: [curl_command, poc_url, payload_chain]
+    severity: high
+
+  - id: sqli_error
+    name: "SQL Injection - Error-based"
+    mitre: ["T1190"]
+    description: "Extract database information via error messages triggered by SQL syntax"
+    applicability_tags: [web, webapp, database]
+    prerequisites: [target_url, parameter_list]
+    procedure: "Test parameters with SQL metacharacters; observe error messages for schema/data leakage"
+    expected_artifacts: [curl_command, error_output, database_schema]
+    severity: critical
+
+  - id: sqli_blind
+    name: "SQL Injection - Blind (Time-based)"
+    mitre: ["T1190"]
+    description: "Infer database contents via time-based delays triggered by conditional SQL"
+    applicability_tags: [web, webapp, database]
+    prerequisites: [target_url, parameter_list]
+    procedure: "Use SLEEP/WAITFOR to trigger delays; measure response time to extract binary data"
+    expected_artifacts: [curl_command, timing_proof, extracted_data]
+    severity: critical
+
+  - id: sqli_union
+    name: "SQL Injection - UNION-based"
+    mitre: ["T1190"]
+    description: "Extract database data by appending UNION SELECT statements"
+    applicability_tags: [web, webapp, database]
+    prerequisites: [target_url, parameter_list, column_count]
+    procedure: "Determine column count via ORDER BY; craft UNION SELECT to extract data"
+    expected_artifacts: [curl_command, union_payload, table_contents]
+    severity: critical
+
+  - id: ssti_injection
+    name: "Server-Side Template Injection (SSTI)"
+    mitre: ["T1190"]
+    description: "Inject template expressions to execute backend code via template engine"
+    applicability_tags: [web, webapp, templating]
+    prerequisites: [target_url, parameter_list]
+    procedure: "Test parameters with template delimiters ({{ }}, {# #}); confirm RCE via sleep/OOB"
+    expected_artifacts: [curl_command, template_payload, rce_proof]
+    severity: critical
+
+  - id: lfi_traversal
+    name: "Local File Inclusion (LFI) - Path Traversal"
+    mitre: ["T1190"]
+    description: "Read local files via path traversal sequences"
+    applicability_tags: [web, webapp, file_inclusion]
+    prerequisites: [target_url, file_parameter]
+    procedure: "Test file parameters with ../ sequences; attempt to read /etc/passwd, config files"
+    expected_artifacts: [curl_command, file_content, lfi_proof]
+    severity: high
+
+  - id: rfi_execution
+    name: "Remote File Inclusion (RFI)"
+    mitre: ["T1190", "T1059"]
+    description: "Execute remote code by including attacker-controlled PHP/JSP files"
+    applicability_tags: [web, webapp, file_inclusion, rce]
+    prerequisites: [target_url, file_parameter, attacker_server]
+    procedure: "Host malicious code on attacker server; inject via file parameter"
+    expected_artifacts: [curl_command, rfi_url, rce_proof]
+    severity: critical
+
+  - id: ssrf_cloud_metadata
+    name: "Server-Side Request Forgery (SSRF) - Cloud Metadata"
+    mitre: ["T1190"]
+    description: "Read cloud metadata endpoints (AWS IMDS, GCP metadata) via SSRF"
+    applicability_tags: [web, webapp, cloud]
+    prerequisites: [target_url, request_parameter]
+    procedure: "Inject cloud metadata URLs (169.254.169.254); extract IAM credentials/secrets"
+    expected_artifacts: [curl_command, metadata_url, credentials]
+    severity: critical
+
+  - id: ssrf_internal_network
+    name: "Server-Side Request Forgery (SSRF) - Internal Services"
+    mitre: ["T1190"]
+    description: "Access internal services (localhost, private IP ranges) from SSRF"
+    applicability_tags: [web, webapp, network]
+    prerequisites: [target_url, request_parameter]
+    procedure: "Probe internal IPs/ports via parameter; identify services (6379 Redis, 9200 ES)"
+    expected_artifacts: [curl_command, service_probe, port_mapping]
+    severity: high
+
+  - id: xxe_file_read
+    name: "XML External Entity (XXE) - File Read"
+    mitre: ["T1190"]
+    description: "Read local files via XML entity expansion"
+    applicability_tags: [web, api, xml]
+    prerequisites: [target_url, xml_parameter]
+    procedure: "Inject ENTITY declaration pointing to file:// URL; exfiltrate via entity expansion"
+    expected_artifacts: [curl_command, xxe_payload, file_content]
+    severity: high
+
+  - id: xxe_ssrf
+    name: "XML External Entity (XXE) - SSRF"
+    mitre: ["T1190"]
+    description: "Trigger SSRF via XXE by pointing entity to internal services"
+    applicability_tags: [web, api, xml, network]
+    prerequisites: [target_url, xml_parameter]
+    procedure: "Inject ENTITY pointing to internal URL; measure response time/content for data"
+    expected_artifacts: [curl_command, xxe_payload, service_response]
+    severity: high
+
+  - id: crlf_injection
+    name: "CRLF Injection"
+    mitre: ["T1190"]
+    description: "Inject CRLF sequences to split HTTP headers/responses"
+    applicability_tags: [web, webapp, http]
+    prerequisites: [target_url, header_parameter]
+    procedure: "Inject %0d%0a into headers; trigger response splitting for cache poisoning/XSS"
+    expected_artifacts: [curl_command, crlf_payload, split_response]
+    severity: medium
+
+  - id: hpp_pollution
+    name: "HTTP Parameter Pollution (HPP)"
+    mitre: ["T1190"]
+    description: "Bypass security controls via duplicate parameter handling differences"
+    applicability_tags: [web, webapp, waf_bypass]
+    prerequisites: [target_url, parameter_list]
+    procedure: "Send duplicate parameters; observe if different handlers process them differently"
+    expected_artifacts: [curl_command, duplicate_params, behavior_diff]
+    severity: medium
+
+  - id: cache_deception
+    name: "Web Cache Deception"
+    mitre: ["T1190"]
+    description: "Poison web cache by exploiting path handling differences"
+    applicability_tags: [web, webapp, cache]
+    prerequisites: [target_url, cache_behavior_analysis]
+    procedure: "Craft URL with static extension + auth-required path; inject content into cache"
+    expected_artifacts: [curl_command, cache_url, cached_content]
+    severity: medium
+
+  - id: race_condition
+    name: "Race Condition - TOCTOU"
+    mitre: ["T1567"]
+    description: "Exploit timing window between check and use"
+    applicability_tags: [web, webapp, logic]
+    prerequisites: [target_url, state_changing_operation]
+    procedure: "Send concurrent requests to bypass balance checks / limit checks"
+    expected_artifacts: [curl_commands, timing_proof, state_change]
+    severity: high
+
+  - id: idor_horizontal
+    name: "Insecure Direct Object Reference (IDOR) - Horizontal"
+    mitre: ["T1190"]
+    description: "Access other users' data by modifying object ID"
+    applicability_tags: [web, webapp, authz]
+    prerequisites: [target_url, object_id_parameter]
+    procedure: "Modify ID to another user's ID; check if access control enforced"
+    expected_artifacts: [curl_command, target_ids, unauthorized_data]
+    severity: high
+
+  - id: idor_vertical
+    name: "Insecure Direct Object Reference (IDOR) - Vertical"
+    mitre: ["T1190"]
+    description: "Escalate privileges by accessing admin/privileged objects"
+    applicability_tags: [web, webapp, authz]
+    prerequisites: [target_url, admin_object_ids]
+    procedure: "Request admin-level objects without elevated privs; extract admin data"
+    expected_artifacts: [curl_command, admin_ids, escalation_proof]
+    severity: critical
+
+  - id: jwt_none_alg
+    name: "JWT - None Algorithm"
+    mitre: ["T1578"]
+    description: "Bypass JWT verification by setting algorithm to 'none'"
+    applicability_tags: [web, api, auth]
+    prerequisites: [target_url, valid_jwt]
+    procedure: "Decode JWT; set alg to 'none'; re-encode; send with modified claims"
+    expected_artifacts: [curl_command, forged_jwt, auth_proof]
+    severity: critical
+
+  - id: jwt_weak_secret
+    name: "JWT - Weak Secret Brute Force"
+    mitre: ["T1578"]
+    description: "Recover JWT secret via dictionary attack"
+    applicability_tags: [web, api, auth]
+    prerequisites: [target_url, valid_jwt]
+    procedure: "Try common secrets (secret, password, key); verify via signature recomputation"
+    expected_artifacts: [curl_command, secret, forged_jwt]
+    severity: critical
+
+  - id: jwt_kid_traversal
+    name: "JWT - Key ID (kid) Path Traversal"
+    mitre: ["T1578"]
+    description: "Exploit kid parameter to load wrong key file"
+    applicability_tags: [web, api, auth]
+    prerequisites: [target_url, valid_jwt]
+    procedure: "Modify kid header to ../../etc/passwd; observe if key loading is exploitable"
+    expected_artifacts: [curl_command, kid_payload, key_content]
+    severity: high
+
+  - id: cors_misconfiguration
+    name: "CORS Misconfiguration"
+    mitre: ["T1190"]
+    description: "Exploit overly permissive CORS headers to steal credentials"
+    applicability_tags: [web, webapp, auth]
+    prerequisites: [target_url]
+    procedure: "Send request from attacker origin; check Access-Control-Allow-Origin response"
+    expected_artifacts: [curl_command, cors_headers, credential_leak]
+    severity: high
+
+  - id: default_credentials
+    name: "Default Credentials"
+    mitre: ["T1078.001"]
+    description: "Authenticate using default username/password"
+    applicability_tags: [web, admin_panels, devices]
+    prerequisites: [target_url, known_defaults]
+    procedure: "Try common defaults (admin/admin, root/root); verify successful auth"
+    expected_artifacts: [curl_command, working_creds, session_proof]
+    severity: high
+
+  - id: mass_assignment
+    name: "Mass Assignment - Privilege Escalation"
+    mitre: ["T1190"]
+    description: "Modify hidden parameters to escalate privileges"
+    applicability_tags: [web, api, authz]
+    prerequisites: [target_url, form_parameters]
+    procedure: "Add hidden parameters (role=admin, is_admin=true) to request; check if processed"
+    expected_artifacts: [curl_command, mass_assignment_payload, privilege_escalation]
+    severity: high
+
+  - id: graphql_introspection
+    name: "GraphQL Introspection"
+    mitre: ["T1190"]
+    description: "Query schema to discover hidden fields/mutations"
+    applicability_tags: [web, api, graphql]
+    prerequisites: [target_url, graphql_endpoint]
+    procedure: "Query __schema; extract type definitions, mutations, subscriptions"
+    expected_artifacts: [curl_command, introspection_query, schema_dump]
+    severity: medium
+
+  - id: graphql_sqli
+    name: "GraphQL - SQL Injection via Field Arguments"
+    mitre: ["T1190"]
+    description: "Exploit SQL injection in GraphQL field resolvers"
+    applicability_tags: [web, api, graphql, database]
+    prerequisites: [target_url, graphql_endpoint]
+    procedure: "Inject SQL into field arguments; observe error messages / timing delays"
+    expected_artifacts: [curl_command, graphql_payload, sql_evidence]
+    severity: critical
+
+  - id: deserialization_rce
+    name: "Unsafe Deserialization - RCE"
+    mitre: ["T1190"]
+    description: "Exploit unsafe deserialization to achieve RCE"
+    applicability_tags: [web, api, java_python_dotnet]
+    prerequisites: [target_url, serialized_data_parameter]
+    procedure: "Generate gadget chain payload (ysoserial); inject into serialized field"
+    expected_artifacts: [curl_command, gadget_payload, rce_proof]
+    severity: critical
+
+  - id: nosqli_injection
+    name: "NoSQL Injection - MongoDB"
+    mitre: ["T1190"]
+    description: "Inject MongoDB operators to bypass authentication/authorization"
+    applicability_tags: [web, api, nosql]
+    prerequisites: [target_url, json_parameter]
+    procedure: "Inject MongoDB operators ({$ne: null}, {$gt: false}); extract data"
+    expected_artifacts: [curl_command, nosqli_payload, extracted_data]
+    severity: critical
+
+  - id: http_smuggling
+    name: "HTTP Request Smuggling"
+    mitre: ["T1190"]
+    description: "Exploit ambiguous HTTP parsing via CL/TE/TE.TE techniques"
+    applicability_tags: [web, http]
+    prerequisites: [target_url, proxy_behavior]
+    procedure: "Craft CL.TE/TE.CL request; smuggle request into next pipeline"
+    expected_artifacts: [curl_command, smuggled_request, response_proof]
+    severity: high
+
+  - id: open_redirect
+    name: "Open Redirect - Filter Bypass"
+    mitre: ["T1190"]
+    description: "Bypass redirect validation to redirect to attacker URL"
+    applicability_tags: [web, webapp, auth]
+    prerequisites: [target_url, redirect_parameter]
+    procedure: "Inject attacker URL with bypass technique (double-slash, backslash)"
+    expected_artifacts: [curl_command, bypass_payload, redirect_proof]
+    severity: medium
+
+  - id: business_logic_flaw
+    name: "Business Logic Flaw - Price Manipulation"
+    mitre: ["T1190"]
+    description: "Bypass price validation via negative values or parameter tampering"
+    applicability_tags: [web, ecommerce]
+    prerequisites: [target_url, checkout_flow]
+    procedure: "Manipulate price/quantity parameters; attempt to purchase below cost"
+    expected_artifacts: [curl_command, price_payload, transaction_proof]
+    severity: high
+
+  - id: password_reset_flaw
+    name: "Authentication Bypass - Password Reset"
+    mitre: ["T1078.001"]
+    description: "Bypass password reset authentication via token prediction or race condition"
+    applicability_tags: [web, auth]
+    prerequisites: [target_url, password_reset_endpoint]
+    procedure: "Request reset token; attempt to predict/reuse/race against validation"
+    expected_artifacts: [curl_command, reset_flow_proof, password_change]
+    severity: critical
+
+  - id: api_version_bypass
+    name: "API Version Bypass"
+    mitre: ["T1190"]
+    description: "Access deprecated/less-protected API versions"
+    applicability_tags: [web, api]
+    prerequisites: [target_url, api_endpoint]
+    procedure: "Try /v1, /v2, /v3 versions; compare security controls"
+    expected_artifacts: [curl_command, version_comparison, security_gap]
+    severity: medium
+
+summary: "25 core web/API vulnerability techniques mapped to MITRE ATT&CK. Extensible for network, cloud, mobile, AD."

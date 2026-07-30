@@ -21,6 +21,7 @@ import html
 import textwrap
 import xml.etree.ElementTree as ET
 import argparse
+import yaml
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -218,6 +219,18 @@ def init_db() -> sqlite3.Connection:
         conn.execute("ALTER TABLE findings ADD COLUMN notes TEXT")
     except sqlite3.OperationalError:
         pass  # column already exists
+    # Add columns for orchestration + PoC discovery (2025 update)
+    for col_def in [
+        "ALTER TABLE findings ADD COLUMN technique_id TEXT",
+        "ALTER TABLE findings ADD COLUMN cve_id TEXT",
+        "ALTER TABLE findings ADD COLUMN curl_poc TEXT",
+        "ALTER TABLE findings ADD COLUMN poc_file TEXT",
+        "ALTER TABLE findings ADD COLUMN poc_links TEXT",
+    ]:
+        try:
+            conn.execute(col_def)
+        except sqlite3.OperationalError:
+            pass  # column already exists
     conn.commit()
     return conn
 
@@ -312,6 +325,11 @@ def add_finding(
     status: str = "open",
     tool: str = "manual",
     short_id: str = None,
+    technique_id: str = None,
+    cve_id: str = None,
+    curl_poc: str = None,
+    poc_file: str = None,
+    poc_links: str = None,
 ) -> dict:
     """Insert a finding and return it as a dict."""
     conn = get_db()
@@ -337,13 +355,15 @@ def add_finding(
         """INSERT INTO findings
                (id, engagement_id, short_id, title, severity, cvss_score, cvss_vector,
                 cwe, owasp, mitre, category, url, description, evidence, impact,
-                remediation, refs, status, tool, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                remediation, refs, status, tool, technique_id, cve_id, curl_poc,
+                poc_file, poc_links, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             finding_id, engagement_id, short_id, title, severity.lower(),
             cvss_score, cvss_vector, cwe, owasp, mitre, category, url,
             description, evidence, impact, remediation, refs,
-            status, tool, now, now,
+            status, tool, technique_id, cve_id, curl_poc,
+            poc_file, poc_links, now, now,
         ),
     )
     conn.commit()
