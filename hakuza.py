@@ -371,15 +371,16 @@ def add_finding(
         """INSERT INTO findings
                (id, engagement_id, short_id, title, severity, cvss_score, cvss_vector,
                 cwe, owasp, mitre, category, url, description, evidence, impact,
-                remediation, refs, status, tool, technique_id, cve_id, curl_poc,
-                poc_file, poc_links, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                remediation, refs, status, tool, notes, created_at, updated_at,
+                technique_id, cve_id, curl_poc, poc_file, poc_links)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                   ?, ?, ?, ?, ?)""",
         (
             finding_id, engagement_id, short_id, title, severity.lower(),
             cvss_score, cvss_vector, cwe, owasp, mitre, category, url,
             description, evidence, impact, remediation, refs,
-            status, tool, technique_id, cve_id, curl_poc,
-            poc_file, poc_links, now, now,
+            status, tool, "", now, now,
+            technique_id, cve_id, curl_poc, poc_file, poc_links,
         ),
     )
     conn.commit()
