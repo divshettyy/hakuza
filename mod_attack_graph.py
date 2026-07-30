@@ -889,6 +889,66 @@ def render_attack_surface_ascii(engagement_id: str, max_targets: int = 10) -> st
     return "\n".join(lines)
 
 
+def cmd_attack_surface(args):
+    """Display attack-surface topology and prioritized targets."""
+    import sys
+    try:
+        from rich.console import Console
+        console = Console()
+    except ImportError:
+        console = None
+
+    engagement_name = args.engagement if hasattr(args, 'engagement') and args.engagement else None
+
+    # Get engagement
+    try:
+        import hakuza
+        if not engagement_name:
+            engagement_name = hakuza.get_config_value("current_engagement")
+
+        if not engagement_name:
+            if console:
+                console.print("[red]No engagement selected. Use 'hakuza switch' or --engagement[/red]")
+            else:
+                print("Error: No engagement selected")
+            return
+
+        engagement = hakuza.get_engagement(engagement_name)
+        if not engagement:
+            if console:
+                console.print(f"[red]Engagement not found: {engagement_name}[/red]")
+            else:
+                print(f"Error: Engagement not found: {engagement_name}")
+            return
+
+        # Get attack surface
+        surface = query_attack_surface(engagement['id'])
+
+        # Display
+        if args.rce_paths:
+            output = find_rce_paths(engagement['id'])
+            title = "RCE Attack Paths"
+        elif args.lateral:
+            output = find_lateral_movement_paths(engagement['id'])
+            title = "Lateral Movement Paths"
+        else:
+            output = render_attack_surface_ascii(engagement['id'])
+            title = "Attack Surface Topology"
+
+        if console:
+            console.print(f"\n[bold cyan]{title}[/bold cyan]\n")
+            console.print(output)
+        else:
+            print(f"\n{title}\n")
+            print(output)
+
+    except Exception as e:
+        if console:
+            console.print(f"[red]Error: {e}[/red]")
+        else:
+            print(f"Error: {e}")
+
+
 if __name__ == "__main__":
     # For testing/demo only
     print("Attack graph module loaded. Use via hakuza.py or import directly.")

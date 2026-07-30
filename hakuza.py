@@ -47,6 +47,22 @@ try:
 except ImportError:
     mod_active = None
 
+try:
+    from mod_attack_graph import cmd_attack_surface
+except (ImportError, AttributeError):
+    cmd_attack_surface = None
+
+try:
+    from mod_poc_generator import cmd_poc_generate, cmd_poc_batch
+except (ImportError, AttributeError):
+    cmd_poc_generate = None
+    cmd_poc_batch = None
+
+try:
+    from mod_master_orchestrator import cmd_master_orchestrate
+except (ImportError, AttributeError):
+    cmd_master_orchestrate = None
+
 # ---------------------------------------------------------------------------
 # CONSTANTS
 # ---------------------------------------------------------------------------
@@ -4682,7 +4698,6 @@ def main():
         "analyze": cmd_analyze,
         "advise": cmd_advise,
         "chain": cmd_chain,
-        "attack-surface": cmd_attack_surface,
         "explain": cmd_explain,
         "web": cmd_web,
         "api": cmd_api,
@@ -4731,6 +4746,16 @@ def main():
 
     if mod_active is not None:
         dispatch["active"] = mod_active.cmd_active
+
+    # Phase 2 optional modules
+    if cmd_attack_surface is not None:
+        dispatch["attack-surface"] = cmd_attack_surface
+    if cmd_poc_generate is not None:
+        dispatch["poc-generate"] = cmd_poc_generate
+    if cmd_poc_batch is not None:
+        dispatch["poc-batch"] = cmd_poc_batch
+    if cmd_master_orchestrate is not None:
+        dispatch["master-orchestrate"] = cmd_master_orchestrate
 
     handler = dispatch.get(args.command)
     if handler:
@@ -12353,14 +12378,6 @@ def list_findings(engagement_id: str, severity_filter: str = None) -> List[Dict]
         return _n("list_findings")(engagement_id, severity_filter)
     except Exception:
         return []
-
-
-def get_config_value(key: str) -> Optional[str]:
-    """Wrapper for hakuza.get_config_value()."""
-    try:
-        return _n("get_config_value")(key)
-    except Exception:
-        return None
 
 
 def build_orchestration_prompt(engagement: Dict[str, Any], findings: List[Dict[str, Any]],
