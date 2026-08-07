@@ -7,5 +7,16 @@ venv/
 *.egg-info/
 .DS_Store
 *.log
+# test / coverage artifacts
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+coverage.json
+coverage.svg
+test-results.xml
+test-report.html
+pytest.log
 testlab/docs/
 testlab/jwt_keys/
+whitebox_validation/

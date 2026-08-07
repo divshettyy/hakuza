@@ -1,0 +1,59 @@
+# HAKUZA Comprehensive Test Suite Requirements
+# Test, performance, and quality assurance dependencies
+
+# Core testing framework
+pytest>=7.0.0
+pytest-cov>=4.0.0
+pytest-xdist>=3.0.0  # Parallel test execution
+pytest-timeout>=2.1.0  # Test timeout handling
+pytest-html>=3.1.0  # HTML report generation
+pytest-mock>=3.10.0  # Mock utilities
+pytest-benchmark>=4.0.0  # Benchmarking
+
+# Coverage and metrics
+coverage>=7.0.0
+coverage-badge>=1.1.0
+
+# Performance profiling
+psutil>=5.9.0
+py-spy>=0.3.0
+memory-profiler>=0.60.0
+
+# Code quality
+pylint>=2.15.0
+flake8>=5.0.0
+black>=23.0.0
+isort>=5.12.0
+mypy>=1.0.0
+
+# Security testing
+bandit>=1.7.0
+safety>=2.3.0
+
+# Mocking and patching
+pytest-mock>=3.10.0
+responses>=0.22.0
+
+# Database — sqlite3 is part of the Python standard library, no install needed.
+
+# Async testing
+pytest-asyncio>=0.21.0
+
+# HTTP testing
+requests-mock>=1.10.0
+httpx>=0.23.0
+
+# Reporting
+jinja2>=3.1.0
+markdown>=3.4.0
+
+# Data validation
+jsonschema>=4.17.0
+
+# Utilities
+pyyaml>=6.0
+colorama>=0.4.6
+rich>=13.0.0
+
+# Mutation testing (optional, for advanced mutation analysis)
+mutmut>=2.4.0

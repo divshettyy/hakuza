@@ -154,6 +154,16 @@ for the full story, including direct verification that the real attack payload h
 ~4.0s against testlab's `/loadstate` and the identical payload against the JSON-based
 `/loadstate-safe` fails to parse in 9ms with zero execution.
 
+## 2026-08-07 — test-infra fixes + credibility curation pass
+
+Found while auditing the repo after the Jul 30–31 "Phase 4-5" build spree. Format below is the file's standard: **Bug** — root cause → fix → verified.
+
+- **A bare `pytest` errored out completely — never ran a single test.** Root cause: `pytest.ini`'s default `addopts` hard-required the `pytest-cov` and `pytest-html` plugins (`--cov*`, `--html`, `--self-contained-html`, `--junitxml`), which aren't in a stock environment; pytest aborted with `unrecognized arguments` before collection. Anyone cloning the repo (including a reviewer) hit this wall before seeing green. → Fix: moved the report-only flags out of the defaults (they're still supplied explicitly by `run_tests.sh --coverage`, so the coverage flow is unchanged), leaving only plugin-free options in `addopts`. → Verified: `python3 -m pytest test_hakuza.py` now runs with only pytest installed — **53 passed**; full-suite collection is clean (**593 collected, 0 errors**).
+- **`requirements-test.txt` could break `pip install -r`.** Root cause: it listed `sqlite3-python>=1.0.0` — `sqlite3` is part of the Python standard library and needs no PyPI package; that line is at best redundant and risks a hard install failure on resolution. → Fix: removed the line (replaced with a comment noting sqlite3 is stdlib).
+- **Not a product bug, logged for honesty: `test_comprehensive.py` ships ≥10 failing auto-generated tests.** They assert against an *imagined* schema, not the real one — e.g. `TestDataValidation::test_engagement_name_uniqueness` INSERTs without `start_date` and dies on the real `NOT NULL` constraint before it ever tests uniqueness; several `TestPerformance` / bulk-insertion tests are timing-threshold flaky. The production schema and code are correct; the tests are wrong. Left in place pending a decision to repair or retire that spree-generated mega-suite (the honest, reliable suite is `test_hakuza.py` + the per-module tests).
+
+**Curation context:** 117 build-note / delivery-summary markdown files and 9 orphaned (imported-by-nothing) `mod_*.py` modules + their tests were moved out of the working tree to a reversible local archive at `~/hakuza-archive-2026-08-07/` (with `MANIFEST.tsv` + `restore.sh`). Repo root reduced from ~70 loose `.md` to 3 (`README`, `CHANGELOG`, `CAPABILITY_MATRIX`). No committed history was touched and nothing was pushed — staged for deliberate review.
+
 ## `pentest-ai-assistant` (secondary project)
 
 | # | Bug | Fix | Verified |

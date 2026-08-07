@@ -1,0 +1,197 @@
+{
+  "sample_engagements": [
+    {
+      "engagement_id": "sample_001",
+      "target_url": "https://vulnerable-php.example.com",
+      "tech_stack": ["php", "mysql", "apache"],
+      "has_waf": false,
+      "findings": [
+        {
+          "title": "SQL Injection - Error Based",
+          "category": "sqli",
+          "severity": "critical",
+          "status": "confirmed",
+          "url": "https://vulnerable-php.example.com/search.php?q=",
+          "cvss_score": 9.8
+        },
+        {
+          "title": "Reflected XSS",
+          "category": "xss",
+          "severity": "high",
+          "status": "confirmed",
+          "url": "https://vulnerable-php.example.com/comment.php?msg=",
+          "cvss_score": 7.1
+        },
+        {
+          "title": "LFI - Path Traversal",
+          "category": "lfi",
+          "severity": "high",
+          "status": "confirmed",
+          "url": "https://vulnerable-php.example.com/include.php?file=",
+          "cvss_score": 7.5
+        }
+      ]
+    },
+    {
+      "engagement_id": "sample_002",
+      "target_url": "https://api-nodejs.example.com",
+      "tech_stack": ["nodejs", "express", "mongodb"],
+      "has_waf": false,
+      "findings": [
+        {
+          "title": "IDOR - Horizontal Privilege Escalation",
+          "category": "idor",
+          "severity": "high",
+          "status": "confirmed",
+          "url": "https://api-nodejs.example.com/api/user/profile",
+          "cvss_score": 7.5
+        },
+        {
+          "title": "JWT - Weak Secret",
+          "category": "jwt",
+          "severity": "high",
+          "status": "confirmed",
+          "url": "https://api-nodejs.example.com/api/auth/token",
+          "cvss_score": 8.1
+        },
+        {
+          "title": "Mass Assignment",
+          "category": "mass",
+          "severity": "medium",
+          "status": "confirmed",
+          "url": "https://api-nodejs.example.com/api/user/update",
+          "cvss_score": 6.5
+        }
+      ]
+    },
+    {
+      "engagement_id": "sample_003",
+      "target_url": "https://app-waf.example.com",
+      "tech_stack": ["python", "django", "postgresql"],
+      "has_waf": true,
+      "waf_vendor": "cloudflare",
+      "findings": [
+        {
+          "title": "IDOR - Vertical Privilege Escalation",
+          "category": "idor",
+          "severity": "critical",
+          "status": "confirmed",
+          "url": "https://app-waf.example.com/api/admin/users",
+          "cvss_score": 9.1
+        },
+        {
+          "title": "Auth Bypass",
+          "category": "auth",
+          "severity": "critical",
+          "status": "confirmed",
+          "url": "https://app-waf.example.com/admin/login",
+          "cvss_score": 9.3
+        },
+        {
+          "title": "Reflected XSS (WAF Bypass)",
+          "category": "xss",
+          "severity": "medium",
+          "status": "confirmed",
+          "url": "https://app-waf.example.com/search",
+          "cvss_score": 6.1
+        }
+      ]
+    },
+    {
+      "engagement_id": "sample_004",
+      "target_url": "https://cms-wordpress.example.com",
+      "tech_stack": ["php", "mysql", "wordpress"],
+      "cms": "wordpress",
+      "has_waf": true,
+      "findings": [
+        {
+          "title": "Unauthenticated File Upload",
+          "category": "upload",
+          "severity": "critical",
+          "status": "confirmed",
+          "url": "https://cms-wordpress.example.com/wp-admin/upload.php",
+          "cvss_score": 9.8
+        },
+        {
+          "title": "SQL Injection - Time-Based Blind",
+          "category": "sqli",
+          "severity": "critical",
+          "status": "confirmed",
+          "url": "https://cms-wordpress.example.com/wp-json/posts",
+          "cvss_score": 9.0
+        },
+        {
+          "title": "Stored XSS in Comments",
+          "category": "xss",
+          "severity": "high",
+          "status": "confirmed",
+          "url": "https://cms-wordpress.example.com/wp-comments-post.php",
+          "cvss_score": 7.2
+        }
+      ]
+    },
+    {
+      "engagement_id": "sample_005",
+      "target_url": "https://api-graphql.example.com",
+      "tech_stack": ["nodejs", "apollo", "graphql"],
+      "has_waf": false,
+      "findings": [
+        {
+          "title": "GraphQL Introspection Enabled",
+          "category": "graphql",
+          "severity": "medium",
+          "status": "confirmed",
+          "url": "https://api-graphql.example.com/graphql",
+          "cvss_score": 5.3
+        },
+        {
+          "title": "IDOR via GraphQL",
+          "category": "idor",
+          "severity": "critical",
+          "status": "confirmed",
+          "url": "https://api-graphql.example.com/graphql",
+          "cvss_score": 8.5
+        },
+        {
+          "title": "NoSQL Injection",
+          "category": "nosql",
+          "severity": "critical",
+          "status": "confirmed",
+          "url": "https://api-graphql.example.com/graphql",
+          "cvss_score": 9.1
+        }
+      ]
+    }
+  ],
+  "statistics": {
+    "total_engagements": 5,
+    "total_findings": 17,
+    "techniques_found": {
+      "sqli": 3,
+      "xss": 4,
+      "lfi": 1,
+      "idor": 4,
+      "jwt": 1,
+      "mass": 1,
+      "auth": 1,
+      "upload": 1,
+      "graphql": 2,
+      "nosql": 1
+    },
+    "success_rates": {
+      "xss_reflected": 0.67,
+      "xss_stored": 0.5,
+      "sqli_error": 0.75,
+      "sqli_blind": 0.67,
+      "lfi_traversal": 1.0,
+      "idor_horizontal": 1.0,
+      "idor_vertical": 1.0,
+      "jwt_weak_secret": 1.0,
+      "mass_assignment": 1.0,
+      "auth_bypass": 1.0,
+      "upload_rce": 1.0,
+      "graphql_introspection": 1.0,
+      "nosql_injection": 1.0
+    }
+  }
+}

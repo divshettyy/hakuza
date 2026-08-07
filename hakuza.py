@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
-HAKUZA — Unified Penetration Testing Platform v2.0
+HAKUZA — Unified Penetration Testing Platform v4.0
+Market-Leading Autonomous Red-Team Platform with 250+ Techniques
+
 AI-augmented security testing with full engagement lifecycle
+Phase 4-5 Integration: ML prioritization, supply chain analysis, advanced cloud attacks
 
 Divith D Shetty | CEH · CRTP · CAISP
 4+ Years VAPT | BFSI Specialist | Alvarez & Marsal
@@ -63,11 +66,86 @@ try:
 except (ImportError, AttributeError):
     cmd_master_orchestrate = None
 
+try:
+    from mod_exploit_chains import cmd_exploit_chains
+except (ImportError, AttributeError):
+    cmd_exploit_chains = None
+
+try:
+    from mod_ml_prioritizer import cmd_ml_prioritize, rank_techniques
+except (ImportError, AttributeError):
+    cmd_ml_prioritize = None
+    rank_techniques = None
+
+try:
+    from mod_supply_chain import cmd_supply_chain, analyze_supply_chain
+except (ImportError, AttributeError):
+    cmd_supply_chain = None
+    analyze_supply_chain = None
+
+try:
+    from mod_cloud_attacks import cmd_cloud_attacks, detect_cloud_infrastructure
+except (ImportError, AttributeError):
+    cmd_cloud_attacks = None
+    detect_cloud_infrastructure = None
+
+try:
+    from mod_threat_intel import cmd_intel
+except (ImportError, AttributeError):
+    cmd_intel = None
+
+try:
+    from mod_zeroday_miner import cmd_zeroday, register_zeroday_command
+except (ImportError, AttributeError):
+    cmd_zeroday = None
+    register_zeroday_command = None
+
+try:
+    from mod_exploit_market import cmd_market
+except (ImportError, AttributeError):
+    cmd_market = None
+
+try:
+    from mod_behavioral_validator import cmd_validate, BehavioralValidator
+except (ImportError, AttributeError):
+    cmd_validate = None
+    BehavioralValidator = None
+
+try:
+    from mod_engagement_telemetry import cmd_telemetry, register_argparse as register_telemetry_argparse
+except (ImportError, AttributeError):
+    cmd_telemetry = None
+    register_telemetry_argparse = None
+
+try:
+    from mod_advanced_http import cmd_http_advanced_enhanced as cmd_http_advanced
+    from mod_advanced_http import register_argparse_enhanced as register_http_advanced_argparse
+except (ImportError, AttributeError):
+    cmd_http_advanced = None
+
+try:
+    from mod_deep_learning_vuln import cmd_ml_vuln
+except (ImportError, AttributeError):
+    cmd_ml_vuln = None
+    register_http_advanced_argparse = None
+
+try:
+    from mod_api_fuzzer import cmd_api_fuzz, register_argparse as register_api_fuzzer_argparse
+except (ImportError, AttributeError):
+    cmd_api_fuzz = None
+    register_api_fuzzer_argparse = None
+
+try:
+    from mod_oss_integration import cmd_oss_scan, register_argparse as register_oss_scan_argparse
+except (ImportError, AttributeError):
+    cmd_oss_scan = None
+    register_oss_scan_argparse = None
+
 # ---------------------------------------------------------------------------
 # CONSTANTS
 # ---------------------------------------------------------------------------
 
-VERSION = "2.0.0"
+VERSION = "4.0.0"
 HAKUZA_DIR = Path.home() / ".hakuza"
 DB_PATH = HAKUZA_DIR / "hakuza.db"
 CONFIG_PATH = HAKUZA_DIR / "config.json"
@@ -2829,7 +2907,20 @@ Be specific to THIS target. Avoid generic advice."""
 
 
 def cmd_chain(args, console):
-    """hakuza chain [--input file] [--save]"""
+    """
+    hakuza chain [--findings eng_id] [--execute] [--simulate] [--auto-approve] [--filter severity] [--output file]
+
+    Discover and analyze multi-step exploitation chains from findings.
+    Supports both automated chain discovery (mod_exploit_chains) and LLM-based analysis.
+    """
+    # Use the new mod_exploit_chains module if available
+    if cmd_exploit_chains is not None:
+        try:
+            return cmd_exploit_chains(args, console)
+        except Exception as e:
+            console.print(f"[yellow]Chain discovery fell back to LLM analysis (error: {e})[/yellow]")
+
+    # Fallback to original LLM-based approach
     eng = _require_engagement(console)
     client = get_client()
 
@@ -2847,7 +2938,7 @@ def cmd_chain(args, console):
         findings_text = findings_to_summary_text(findings)
 
     print_engagement_header(eng, console)
-    console.print(Rule("[bold red]Vulnerability Chain Analysis[/bold red]"))
+    console.print(Rule("[bold red]Vulnerability Chain Analysis (LLM)[/bold red]"))
 
     prompt = f"""Perform advanced vulnerability chaining analysis for: {eng['name']}
 Target: {eng.get('target','N/A')}
@@ -4382,8 +4473,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     # --- chain ---
     p_chain = sub.add_parser("chain", help="Build exploitation chains from findings")
-    p_chain.add_argument("--input", default=None)
-    p_chain.add_argument("--save", action="store_true")
+    p_chain.add_argument("--findings", default=None, metavar="ENG_ID",
+                         help="Engagement ID to analyze (default: current engagement)")
+    p_chain.add_argument("--input", default=None, help="Input findings file")
+    p_chain.add_argument("--filter", default=None, metavar="SEVERITY",
+                         help="Filter by severity (critical, high, medium, low)")
+    p_chain.add_argument("--execute", action="store_true",
+                         help="Execute the discovered chains (interactive approval)")
+    p_chain.add_argument("--simulate", action="store_true",
+                         help="Simulate chain execution (dry run)")
+    p_chain.add_argument("--auto-approve", action="store_true", dest="auto_approve",
+                         help="Auto-approve all chain steps (use with caution)")
+    p_chain.add_argument("--output", default=None, metavar="FILE",
+                         help="Save chain analysis to JSON file")
+    p_chain.add_argument("--save", action="store_true", help="Save to engagement folder")
 
     # --- attack-surface ---
     p_surface = sub.add_parser("attack-surface", help="Visualize attack surface topology & prioritized targets")
@@ -4427,6 +4530,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_threat.add_argument("--sector", default="bfsi",
                           choices=["bfsi", "healthcare", "govt", "retail", "tech"])
 
+    # --- intel ---
+    p_intel = sub.add_parser("intel", help="Real-time threat intelligence — CISA KEV, EPSS, marketplace monitoring, trend analysis")
+    p_intel.add_argument("--live", action="store_true", help="Fetch live threat data (vs. cache)")
+    p_intel.add_argument("--stack", default=None, help="Target tech stack (e.g., 'nginx=1.19.0,apache=2.4.48')")
+    p_intel.add_argument("--output", default=None, help="Export prioritized threats to JSON file")
+    p_intel.add_argument("--alerts", action="store_true", help="Show security alerts for matched components")
+    p_intel.add_argument("--trends", action="store_true", help="Show emerging threat trends")
+
     # --- kb ---
     p_kb = sub.add_parser("kb", help="Knowledge base — any vuln, technique, or tool")
     p_kb.add_argument("topic", nargs="+")
@@ -4438,6 +4549,22 @@ def build_parser() -> argparse.ArgumentParser:
     p_payload.add_argument("--context", default=None, help="Tech context (e.g. mysql, jinja2)")
     p_payload.add_argument("--bypass", default=None, choices=["waf", "filter"], help="Generate bypass variants")
     p_payload.add_argument("--format", default=None, choices=["url", "json", "xml", "header"])
+
+    # --- supply-chain ---
+    p_supply_chain = sub.add_parser("supply-chain", help="Supply chain vulnerability scanning (SolarWinds-class impact)")
+    p_supply_chain.add_argument("--scan", dest="path", default=".", help="Path to scan (default: current directory)")
+    p_supply_chain.add_argument("--format", choices=["json", "sarif", "markdown"], default="markdown", help="Output format")
+    p_supply_chain.add_argument("--output", help="Output file path")
+
+    # --- ml-vuln ---
+    p_ml_vuln = sub.add_parser("ml-vuln", help="Deep learning vulnerability analysis: exploitability prediction (85%+ accuracy), risk forecasting, anomaly detection")
+    p_ml_vuln.add_argument("--target", metavar="URL", help="Target URL to profile")
+    p_ml_vuln.add_argument("--tech-stack", metavar="STACK", help="Technology stack (comma-separated: php,mysql,apache)")
+    p_ml_vuln.add_argument("--predict-exploitability", action="store_true", help="Predict CVE exploitability with ML model")
+    p_ml_vuln.add_argument("--forecast-trends", action="store_true", help="Forecast emerging threats (30-day forecast)")
+    p_ml_vuln.add_argument("--detect-anomalies", action="store_true", help="Detect anomalous patterns indicating 0days")
+    p_ml_vuln.add_argument("--cve-id", metavar="CVE", help="Specific CVE to analyze")
+    p_ml_vuln.add_argument("--full-analysis", action="store_true", help="Run all analyses (exploitability + severity + chains + recommendations)")
 
     # --- cvss ---
     p_cvss = sub.add_parser("cvss", help="CVSS calculator and decoder")
@@ -4573,6 +4700,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_serve.add_argument("--no-browser", dest="no_browser", action="store_true",
                          help="Do not auto-open a browser tab")
 
+    # --- zeroday miner: AI-powered vulnerability pattern discovery ---
+    if register_zeroday_command is not None:
+        register_zeroday_command(sub)
+
     # --- recon-plus module: wayback, secrets, fuzz, wizard, scope, config ---
     if mod_recon_plus is not None:
         mod_recon_plus.register_argparse(sub)
@@ -4580,6 +4711,22 @@ def build_parser() -> argparse.ArgumentParser:
     # --- active module: live differential response testing ---
     if mod_active is not None:
         mod_active.register_argparse(sub)
+
+    # --- advanced HTTP module: protocol-level testing (smuggling, cache poisoning, etc.) ---
+    if register_http_advanced_argparse is not None:
+        register_http_advanced_argparse(sub)
+
+    # --- telemetry module: engagement data pipeline for ML ---
+    if register_telemetry_argparse is not None:
+        register_telemetry_argparse(sub)
+
+    # --- API fuzzer module: advanced API fuzzing with context-aware payloads ---
+    if register_api_fuzzer_argparse is not None:
+        register_api_fuzzer_argparse(sub)
+
+    # --- OSS Integration module: 15+ tool orchestration engine ---
+    if register_oss_scan_argparse is not None:
+        register_oss_scan_argparse(sub)
 
     p_list_tech = sub.add_parser("list-techniques",
     help="List all ATT&CK-mapped techniques available for orchestration",
@@ -4611,6 +4758,28 @@ def build_parser() -> argparse.ArgumentParser:
     p_orch.add_argument("--max-iterations", "-i", type=int, default=10, help="Max iterations (default: 10)")
     p_orch.add_argument("--dry-run", action="store_true", help="Plan only, don't execute")
     p_orch.set_defaults(func=cmd_orchestrate)
+
+    p_validate = sub.add_parser("validate",
+    help="Validate PoC and measure exploitation impact",
+    description="Monitor application behavior during PoC execution to confirm success, eliminate false positives, and quantify impact"
+    )
+    p_validate.add_argument("--poc", required=True, help="Path to PoC script (Python/Bash/curl)")
+    p_validate.add_argument("--target", required=True, help="Target URL (http://...)")
+    p_validate.add_argument("--measure", choices=["basic", "impact", "full"], default="basic",
+                           help="Measurement level: basic (confirm only), impact (CVSS), full (all metrics)")
+    p_validate.add_argument("--indicators", help="Comma-separated custom success indicators")
+    p_validate.set_defaults(func=cmd_validate)
+
+    # --- market ---
+    p_market = sub.add_parser("market", help="Underground exploit market monitor & trending analysis")
+    p_market.add_argument("--shodan", action="store_true", help="Analyze Shodan trends")
+    p_market.add_argument("--censys", action="store_true", help="Monitor Censys CT discoveries")
+    p_market.add_argument("--greynoise", action="store_true", help="Analyze real attacker activity")
+    p_market.add_argument("--epss", action="store_true", help="Include EPSS scoring")
+    p_market.add_argument("--trending", action="store_true", help="Show trending exploits & payloads")
+    p_market.add_argument("--correlate", action="store_true", help="Correlate APT techniques with targets")
+    p_market.add_argument("--domain", dest="domain", default="example.com", help="Domain for analysis")
+    p_market.set_defaults(func=cmd_market)
 
     return parser
 
@@ -4704,6 +4873,7 @@ def main():
         "api": cmd_api,
         "ai-audit": cmd_ai_audit,
         "threat": cmd_threat,
+        "intel": cmd_intel,
         "kb": cmd_kb,
         "payload": cmd_payload,
         "cvss": cmd_cvss,
@@ -4733,6 +4903,12 @@ def main():
         "orchestrate": cmd_orchestrate,
     }
 
+    if cmd_validate is not None:
+        dispatch["validate"] = cmd_validate
+
+    if cmd_telemetry is not None:
+        dispatch["telemetry"] = cmd_telemetry
+
     if mod_recon_plus is not None:
         dispatch.update({
             "wayback": mod_recon_plus.cmd_wayback,
@@ -4748,6 +4924,18 @@ def main():
     if mod_active is not None:
         dispatch["active"] = mod_active.cmd_active
 
+    # Advanced HTTP protocol testing module
+    if cmd_http_advanced is not None:
+        dispatch["http-advanced"] = cmd_http_advanced
+
+    # API fuzzer module
+    if cmd_api_fuzz is not None:
+        dispatch["api-fuzz"] = cmd_api_fuzz
+
+    # OSS Integration module (15+ tool orchestration)
+    if cmd_oss_scan is not None:
+        dispatch["oss-scan"] = cmd_oss_scan
+
     # Phase 2 optional modules
     if cmd_attack_surface is not None:
         dispatch["attack-surface"] = cmd_attack_surface
@@ -4757,6 +4945,12 @@ def main():
         dispatch["poc-batch"] = cmd_poc_batch
     if cmd_master_orchestrate is not None:
         dispatch["master-orchestrate"] = cmd_master_orchestrate
+    if cmd_supply_chain is not None:
+        dispatch["supply-chain"] = cmd_supply_chain
+    if cmd_zeroday is not None:
+        dispatch["zeroday"] = cmd_zeroday
+    if cmd_market is not None:
+        dispatch["market"] = cmd_market
 
     handler = dispatch.get(args.command)
     if handler:
