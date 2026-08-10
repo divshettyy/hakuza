@@ -24,6 +24,42 @@ except ImportError as e:
     IMPORT_ERROR = str(e)
 
 
+def register_wireless_commands(parser):
+    """Register wireless / deep-network / attack-chain commands with hakuza's parser."""
+    pw = parser.add_parser(
+        "wireless",
+        help="Deep wireless attacks: WiFi scan, WPA2 handshake capture/crack, evil twin, deauth, Bluetooth (requires Kali + a wireless adapter)",
+    )
+    pw.add_argument("--interface", default=None, help="Wireless interface (e.g. wlan0)")
+    pw.add_argument("--scan", action="store_true", help="Scan for nearby WiFi networks")
+    pw.add_argument("--capture", action="store_true", help="Capture a WPA2 handshake")
+    pw.add_argument("--crack", action="store_true", help="Crack a captured handshake")
+    pw.add_argument("--deauth", action="store_true", help="Send deauthentication frames")
+    pw.add_argument("--evil-twin", dest="evil_twin", action="store_true", help="Launch an evil-twin AP")
+    pw.add_argument("--bluetooth", action="store_true", help="Bluetooth reconnaissance")
+    pw.add_argument("--ssid", default=None, help="Target SSID")
+    pw.add_argument("--bssid", default=None, help="Target BSSID")
+    pw.add_argument("--wifi-domain", dest="wifi_domain", default=None, help="Corporate WiFi domain")
+
+    pn = parser.add_parser(
+        "network-deep",
+        help="Layer 2/3 attacks: MITM, ARP credential capture, Kerberos attacks (requires an offensive network position)",
+    )
+    pn.add_argument("--interface", default=None, help="Network interface")
+    pn.add_argument("--target", default=None, help="Target host or subnet")
+    pn.add_argument("--mitm", action="store_true", help="Man-in-the-middle")
+    pn.add_argument("--arp-creds", dest="arp_creds", action="store_true", help="ARP-spoof + credential capture")
+    pn.add_argument("--kerberos", action="store_true", help="Kerberos attacks (Kerberoast / AS-REP)")
+    pn.add_argument("--creds", action="store_true", help="Passive credential capture")
+
+    pc = parser.add_parser(
+        "attack-chain",
+        help="Chained network + wireless attack playbook",
+    )
+    pc.add_argument("--interface", default=None, help="Interface")
+    pc.add_argument("--target", default=None, help="Target host or subnet")
+
+
 def cmd_wireless(args, console: Console) -> None:
     """
     hakuza wireless [--scan|--capture|--crack|--chain] [--interface wlan0] [--target-ap BSSID]

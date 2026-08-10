@@ -35,7 +35,6 @@ import hakuza
 import mod_techniques
 import mod_poc_generator
 import mod_attack_graph
-import mod_fireteam
 import mod_master_orchestrator
 import mod_technique_executors
 import mod_orchestrate
@@ -595,60 +594,8 @@ class TestPoCGenerator:
 # UNIT TESTS: FIRETEAM COORDINATOR
 # =============================================================================
 
-class TestFireteamCoordinator:
-    """Unit tests for Fireteam parallel coordination."""
-
-    def test_fireteam_module_loadable(self):
-        """Verify mod_fireteam module loads."""
-        assert mod_fireteam is not None
-
-    def test_wave_spec_dataclass(self):
-        """Verify WaveSpec dataclass is correctly defined."""
-        wave = mod_fireteam.WaveSpec(
-            wave_id="test_wave",
-            num_agents=3,
-            investigation_angles=["recon", "web"],
-            timeout_seconds=300,
-            approval_gate=False,
-        )
-
-        assert wave.wave_id == "test_wave"
-        assert wave.num_agents == 3
-        assert len(wave.investigation_angles) == 2
-        assert wave.timeout_seconds == 300
-        assert wave.approval_gate is False
-
-    def test_agent_result_dataclass(self):
-        """Verify AgentResult dataclass is correctly defined."""
-        result = mod_fireteam.AgentResult(
-            agent_id="agent_001",
-            angle="web_recon",
-            status="success",
-            findings=[{"title": "Test Finding", "severity": "high"}],
-            logs="Test logs",
-            duration_seconds=45.2,
-        )
-
-        assert result.agent_id == "agent_001"
-        assert result.angle == "web_recon"
-        assert result.status == "success"
-        assert len(result.findings) == 1
-        assert result.duration_seconds == 45.2
-
-    def test_fireteam_coordinator_initialization(self, sample_engagement, mock_anthropic):
-        """Verify FireteamCoordinator initialization."""
-        eng_id, db = sample_engagement
-
-        coordinator = mod_fireteam.FireteamCoordinator(
-            engagement_id=eng_id,
-            db_conn=db,
-            engagement_name="test_engagement",
-        )
-
-        assert coordinator.engagement_id == eng_id
-        assert coordinator.engagement_name == "test_engagement"
-        assert coordinator.total_findings == 0
-        assert len(coordinator.wave_results) == 0
+# TestFireteamCoordinator removed — mod_fireteam cut 2026-08-07 (redundant
+# simulated orchestrator, superseded by mod_orchestrate/mod_master_orchestrator).
 
 
 # =============================================================================
@@ -875,7 +822,6 @@ class TestPerformance:
         import mod_techniques
         import mod_poc_generator
         import mod_attack_graph
-        import mod_fireteam
         import mod_master_orchestrator
         import mod_technique_executors
 
@@ -1129,7 +1075,6 @@ class TestRegressions:
             "mod_techniques",
             "mod_poc_generator",
             "mod_attack_graph",
-            "mod_fireteam",
             "mod_master_orchestrator",
             "mod_technique_executors",
             "mod_orchestrate",

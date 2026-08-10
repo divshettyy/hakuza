@@ -164,6 +164,13 @@ Found while auditing the repo after the Jul 30–31 "Phase 4-5" build spree. For
 
 **Curation context:** 117 build-note / delivery-summary markdown files and 9 orphaned (imported-by-nothing) `mod_*.py` modules + their tests were moved out of the working tree to a reversible local archive at `~/hakuza-archive-2026-08-07/` (with `MANIFEST.tsv` + `restore.sh`). Repo root reduced from ~70 loose `.md` to 3 (`README`, `CHANGELOG`, `CAPABILITY_MATRIX`). No committed history was touched and nothing was pushed — staged for deliberate review.
 
+## 2026-08-07 (later) — depth-or-cut review of unwired modules
+
+Reviewed the 13 modules not imported by the CLI, cross-referenced with `assemble.py`'s inline list to isolate the 7 truly orphaned (neither imported nor assembled). **Cut 4** (archived): `mod_ml_training_pipeline` + `mod_ml_validation` (decorative — real-looking sklearn feeding a prioritizer that actually scores by a hand-tuned ROI formula and loads no trained model), `mod_fireteam` (redundant simulated orchestrator, superseded by `mod_orchestrate`/`mod_master_orchestrator`), and `mod_mobile_deep` (duplicates the already-wired `mod_mobile_cloud`). **Wired 2 real features** into the CLI via the existing import+register+dispatch pattern: `mod_whitebox` → `hakuza whitebox`, and `mod_network_wireless` + its integration wrapper → `hakuza wireless / network-deep / attack-chain`.
+
+- **Bug (found while verifying the newly-wired `whitebox` command): `hakuza whitebox <file>` silently reported 0 vulnerabilities.** Root cause: `SourceCodeAnalyzer.analyze()` enumerates files with `base_path.rglob("*.ext")`, which yields nothing when `base_path` is a single file rather than a directory. The 26 unit tests never caught it because they only ever pass a directory. → Fix: `analyze()` now handles a single-file `base_path` directly (checks `is_file()` + suffix). → Verified live: the same sample file went from 0 → **6 findings** (5 CRITICAL / 1 HIGH); a directory scan finds 27; all 26 whitebox unit tests still pass. This is exactly why the new command was exercised end-to-end instead of trusting the green unit tests.
+- Removed the cut modules' only test coupling (`mod_fireteam`'s `TestFireteamCoordinator` + its two import references in `test_hakuza.py`); the committable suite stays green at **398 passed** and `import hakuza` + `hakuza --help` are clean.
+
 ## `pentest-ai-assistant` (secondary project)
 
 | # | Bug | Fix | Verified |

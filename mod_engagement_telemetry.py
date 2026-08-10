@@ -710,7 +710,7 @@ class EngagementImporter:
 class MLTrainingDataGenerator:
     """
     Generate ML training data from engagement telemetry.
-    Feeds mod_ml_training_pipeline with high-quality historical data.
+    Produces high-quality historical data for ML-based finding prioritization.
     """
 
     def __init__(self, telemetry: EngagementTelemetry):

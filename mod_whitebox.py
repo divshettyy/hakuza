@@ -293,8 +293,13 @@ class SourceCodeAnalyzer:
             extensions.extend(file_extensions.get(lang, []))
 
         files_to_scan = []
-        for ext in extensions:
-            files_to_scan.extend(self.base_path.rglob(f"*{ext}"))
+        if self.base_path.is_file():
+            # Allow analyzing a single file, not just a directory tree.
+            if self.base_path.suffix in extensions:
+                files_to_scan = [self.base_path]
+        else:
+            for ext in extensions:
+                files_to_scan.extend(self.base_path.rglob(f"*{ext}"))
 
         for file_path in files_to_scan:
             self._analyze_file(file_path)
@@ -565,6 +570,19 @@ class WhiteBoxReporter:
 # ─────────────────────────────────────────────────────────────────────────────
 # CLI INTEGRATION
 # ─────────────────────────────────────────────────────────────────────────────
+
+def register_whitebox_command(parser):
+    """Register the whitebox command with hakuza's argument parser."""
+    p = parser.add_parser(
+        "whitebox",
+        help="White-box static source-code analysis (Python/JS/PHP/Java) for vulnerability patterns",
+    )
+    p.add_argument("path", help="Source file or directory to analyze")
+    p.add_argument("--output", "-o", default=None,
+                   help="Write findings to a report file (extension set per --format)")
+    p.add_argument("--format", choices=["json", "markdown", "both"], default="both",
+                   help="Report format when --output is set (default: both)")
+
 
 def cmd_whitebox_analyze(args) -> None:
     """CLI command: hakuza whitebox analyze <path>"""

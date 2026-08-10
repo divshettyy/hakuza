@@ -101,6 +101,22 @@ except (ImportError, AttributeError):
     register_zeroday_command = None
 
 try:
+    from mod_whitebox import cmd_whitebox_analyze, register_whitebox_command
+except (ImportError, AttributeError):
+    cmd_whitebox_analyze = None
+    register_whitebox_command = None
+
+try:
+    from mod_network_wireless_integration import (
+        cmd_wireless, cmd_network_deep, cmd_attack_chain, register_wireless_commands
+    )
+except (ImportError, AttributeError):
+    cmd_wireless = None
+    cmd_network_deep = None
+    cmd_attack_chain = None
+    register_wireless_commands = None
+
+try:
     from mod_exploit_market import cmd_market
 except (ImportError, AttributeError):
     cmd_market = None
@@ -4704,6 +4720,14 @@ def build_parser() -> argparse.ArgumentParser:
     if register_zeroday_command is not None:
         register_zeroday_command(sub)
 
+    # --- whitebox: static source-code security analysis ---
+    if register_whitebox_command is not None:
+        register_whitebox_command(sub)
+
+    # --- network/wireless: L2/L3 + RF attacks (requires Kali/adapter) ---
+    if register_wireless_commands is not None:
+        register_wireless_commands(sub)
+
     # --- recon-plus module: wayback, secrets, fuzz, wizard, scope, config ---
     if mod_recon_plus is not None:
         mod_recon_plus.register_argparse(sub)
@@ -4951,6 +4975,14 @@ def main():
         dispatch["zeroday"] = cmd_zeroday
     if cmd_market is not None:
         dispatch["market"] = cmd_market
+    if cmd_whitebox_analyze is not None:
+        dispatch["whitebox"] = lambda args, console: cmd_whitebox_analyze(args)
+    if cmd_wireless is not None:
+        dispatch["wireless"] = cmd_wireless
+    if cmd_network_deep is not None:
+        dispatch["network-deep"] = cmd_network_deep
+    if cmd_attack_chain is not None:
+        dispatch["attack-chain"] = cmd_attack_chain
 
     handler = dispatch.get(args.command)
     if handler:
