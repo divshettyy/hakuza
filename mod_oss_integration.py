@@ -364,6 +364,15 @@ class ToolDetector:
     def __init__(self):
         self.tools_status: Dict[str, ToolHealthCheck] = {}
         self.cache_file = _OSS_CACHE_DIR / "tool_status.json"
+        # check_all_tools() runs check_tool() concurrently via ThreadPoolExecutor,
+        # and each call mutates self.tools_status then reads it back in
+        # _save_cache(). Without a lock, one worker thread inserting a new key
+        # while another is mid-iteration over tools_status.items() in
+        # _save_cache() raises "RuntimeError: dictionary changed size during
+        # iteration", and unsynchronized concurrent writes to self.cache_file
+        # can also interleave/corrupt the cache JSON. RLock (not Lock) because
+        # check_tool() calls _save_cache() while already holding the lock.
+        self._lock = threading.RLock()
         self._load_cache()
 
     def _load_cache(self):
@@ -388,17 +397,18 @@ class ToolDetector:
     def _save_cache(self):
         """Save tool status to cache."""
         try:
-            cache_data = {
-                name: {
-                    "installed": check.installed,
-                    "version": check.version,
-                    "path": check.path,
-                    "is_functional": check.is_functional,
+            with self._lock:
+                cache_data = {
+                    name: {
+                        "installed": check.installed,
+                        "version": check.version,
+                        "path": check.path,
+                        "is_functional": check.is_functional,
+                    }
+                    for name, check in self.tools_status.items()
                 }
-                for name, check in self.tools_status.items()
-            }
-            with open(self.cache_file, "w") as f:
-                json.dump(cache_data, f, indent=2)
+                with open(self.cache_file, "w") as f:
+                    json.dump(cache_data, f, indent=2)
         except Exception as e:
             logger.warning(f"Failed to save tool cache: {e}")
 
@@ -452,7 +462,8 @@ class ToolDetector:
         except Exception as e:
             check.error_message = f"Error: {str(e)}"
 
-        self.tools_status[tool_name] = check
+        with self._lock:
+            self.tools_status[tool_name] = check
         self._save_cache()
         return check
 
