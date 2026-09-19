@@ -476,7 +476,7 @@ def add_credential(
     conn = _get_db()
     now = datetime.now().isoformat()
 
-    conn.execute(
+    cursor = conn.execute(
         """INSERT INTO graph_credentials
            (engagement_id, host_id, username, password_hash, source_tool, service_type,
             confirmed, discovered_at, created_at, updated_at)
@@ -529,14 +529,14 @@ def add_share(
         conn.commit()
         share_id = existing['id']
     else:
-        conn.execute(
+        cursor = conn.execute(
             """INSERT INTO graph_shares
                (host_id, share_name, access_level, discovered_via, discovered_at, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (host_id, share_name, access_level, discovered_via, now, now, now),
         )
         conn.commit()
-        share_id = conn.lastrowid
+        share_id = cursor.lastrowid
 
     row = conn.execute("SELECT * FROM graph_shares WHERE id = ?", (share_id,)).fetchone()
     return dict(row) if row else None
@@ -573,7 +573,7 @@ def add_attack_path(
 
     chain_json = json.dumps(technique_chain)
 
-    conn.execute(
+    cursor = conn.execute(
         """INSERT INTO graph_attack_paths
            (engagement_id, start_host_id, start_service_id, end_host_id, technique_chain,
             likelihood, required_creds, assumed_creds, discovered_at, created_at, updated_at)
@@ -920,9 +920,6 @@ def cmd_attack_surface(args):
             else:
                 print(f"Error: Engagement not found: {engagement_name}")
             return
-
-        # Get attack surface
-        surface = query_attack_surface(engagement['id'])
 
         # Display
         if args.rce_paths:
