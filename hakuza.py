@@ -10812,10 +10812,18 @@ def _n(attr):
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
-
-def _require_engagement(console):
-    """Delegate to hakuza._require_engagement."""
-    return _n("_require_engagement")(console)
+#
+# NOTE: _require_engagement() and _extract_domain() are intentionally NOT
+# redefined here as _n()-delegating wrappers. hakuza.py already defines both
+# of these at module scope (see _require_engagement() near mod_mobile_cloud
+# and _extract_domain() in the base file). Since this file is assembled by
+# concatenating all mod_*.py bodies into one module, a wrapper here with the
+# same name would shadow — not delegate to — the real function: _n(attr)
+# does getattr(importlib.import_module("hakuza"), attr), and once merged,
+# "hakuza" IS this same module, so the lookup would find this wrapper itself
+# and recurse forever (silently swallowed by callers' broad except clauses,
+# turning every call into `None`/a crash). Omitting the wrapper lets calls
+# below simply use the real, working, earlier-defined function.
 
 
 def _get_client_or_none():
@@ -10848,10 +10856,6 @@ def _run_tool(cmd, timeout=120, input_data=None):
 
 def _check_tools():
     return _n("check_tools")()
-
-
-def _extract_domain(target):
-    return _n("_extract_domain")(target)
 
 
 # Rich helpers resolved lazily
@@ -12590,21 +12594,22 @@ def _init_globals():
     return console
 
 
-# Wrapper functions for hakuza module dependencies
-def get_engagement(name: str = None) -> Optional[Dict[str, Any]]:
-    """Wrapper for hakuza.get_engagement()."""
-    try:
-        return _n("get_engagement")(name)
-    except Exception:
-        return None
-
-
-def list_findings(engagement_id: str, severity_filter: str = None) -> List[Dict]:
-    """Wrapper for hakuza.list_findings()."""
-    try:
-        return _n("list_findings")(engagement_id, severity_filter)
-    except Exception:
-        return []
+# NOTE: get_engagement() and list_findings() are intentionally NOT redefined
+# here as _n()-delegating wrappers. hakuza.py already defines both at module
+# scope earlier in this file (get_engagement() near the DB helpers,
+# list_findings() alongside add_finding()). Since this file is assembled by
+# concatenating all mod_*.py bodies into one module, a wrapper here with the
+# same name would shadow — not delegate to — the real function: _n(attr)
+# does getattr(importlib.import_module("hakuza"), attr), and once merged,
+# "hakuza" IS this same module, so the lookup would find this wrapper itself
+# and recurse forever. That recursion was being silently swallowed by the
+# `except Exception: return None`/`return []` below, which made every call
+# to get_engagement()/list_findings() anywhere in hakuza.py — including
+# `hakuza init`, `hakuza status`, etc. — silently return None/[] instead of
+# real data (e.g. `hakuza init` crashed with "'NoneType' object is not
+# subscriptable" because create_engagement()'s return value came back None).
+# Omitting the wrapper lets calls below simply use the real, working,
+# earlier-defined function.
 
 
 def build_orchestration_prompt(engagement: Dict[str, Any], findings: List[Dict[str, Any]],
