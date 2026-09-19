@@ -37,6 +37,7 @@ from enum import Enum
 from collections import defaultdict, Counter
 import statistics
 import random
+from rich.table import Table
 from urllib.parse import urlparse, parse_qs
 
 # Optional ML imports
@@ -1307,7 +1308,14 @@ def _forecast_mode(args, console, forecaster):
 def _target_mode(args, console, profiler):
     """Profile target for risk."""
     target_url = args.target
-    tech_stack = getattr(args, 'tech_stack', ['apache', 'php']).split(',') if hasattr(args, 'tech_stack') else ['generic']
+    # argparse always sets `tech_stack` on args (hasattr is True even when
+    # --tech-stack wasn't passed), just with value None — so the old
+    # `getattr(..., default).split(',') if hasattr(...) else ...` guard never
+    # actually caught the "not provided" case and crashed with
+    # "'NoneType' object has no attribute 'split'" on every default
+    # invocation. Check the value itself instead of attribute presence.
+    tech_stack_raw = getattr(args, 'tech_stack', None)
+    tech_stack = tech_stack_raw.split(',') if tech_stack_raw else ['apache', 'php']
 
     console.print(f"\n[bold]Profiling target:[/bold] {target_url}\n")
 

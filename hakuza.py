@@ -4983,6 +4983,8 @@ def main():
         dispatch["network-deep"] = cmd_network_deep
     if cmd_attack_chain is not None:
         dispatch["attack-chain"] = cmd_attack_chain
+    if cmd_ml_vuln is not None:
+        dispatch["ml-vuln"] = cmd_ml_vuln
 
     handler = dispatch.get(args.command)
     if handler:
