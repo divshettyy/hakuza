@@ -1,3 +1,7 @@
+> [!IMPORTANT]
+> **This repository has been merged into [divshettyy/pentest-toolkit](https://github.com/divshettyy/pentest-toolkit).**
+> The hakuza framework now lives there under [`hakuza/`](https://github.com/divshettyy/pentest-toolkit/tree/master/hakuza), with its full commit history preserved. This standalone repo is archived and read-only.
+
 # HAKUZA — Unified Penetration Testing Platform
 
 An AI-augmented CLI that runs the full lifecycle of a security engagement — recon, scanning, findings management, exploitation-chain reasoning, and reporting — from one tool, backed by a local SQLite engagement database and Anthropic's Claude for triage and analysis.
